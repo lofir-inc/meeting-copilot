@@ -1,0 +1,18 @@
+# 会議の実データ。録音・文字起こし・声紋が入るので、絶対に版へ載せない
+workspace/
+
+# 自分の設定（プロジェクト ID やマイク名が入る。見本は settings.example.yaml）
+config/settings.yaml
+
+# 実行ログ（発話の中身がそのまま出る）
+*.log
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# macOS
+.DS_Store

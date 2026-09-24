@@ -1,0 +1,813 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>会議アシスタント</title>
+<style>
+.caption.picking { background: #fff7d6 }
+.danger-mark { color: #b4232c; font-size: 11px }
+.can { color: #1a7f37 } .cannot { color: #8b929a }
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif; color: #1f2933; background: #f5f7fa; }
+header { padding: 12px 20px; background: white; border-bottom: 1px solid #dbe1e8; display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+header h1 { font-size: 17px; margin: 0; }
+nav button { border: 0; background: transparent; padding: 6px 10px; font-size: 15px; cursor: pointer; color: #52606d; border-bottom: 2px solid transparent; }
+nav button.on { color: #1d4ed8; border-bottom-color: #2563eb; font-weight: 650; }
+main { max-width: 1500px; margin: 0 auto; padding: 16px 20px 60px; }
+main.wide { max-width: none; padding: 0; }
+section { background: white; border: 1px solid #dbe1e8; border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; }
+section[hidden] { display: none; }
+h2 { font-size: 16px; margin: 0 0 8px; }
+.meta { color: #667085; font-size: 13px; }
+.note { background: #fffbe6; border: 1px solid #f0d98c; border-radius: 6px; padding: 8px 10px; font-size: 13px; margin: 8px 0; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid #edf0f2; vertical-align: top; }
+th { font-size: 13px; color: #52606d; font-weight: 600; }
+input[type=text], select { padding: 5px 7px; border: 1px solid #cbd2d9; border-radius: 5px; font-size: 14px; font-family: inherit; }
+input.right { width: 100%; min-width: 140px; }
+button.primary { padding: 6px 13px; border: 1px solid #2563eb; border-radius: 6px; background: #2563eb; color: white; font-size: 14px; cursor: pointer; }
+button.plain { padding: 5px 11px; border: 1px solid #cbd2d9; border-radius: 6px; background: white; font-size: 14px; cursor: pointer; }
+button.danger { padding: 3px 9px; border: 1px solid #f0a8a0; border-radius: 6px; background: white; color: #b42318; font-size: 13px; cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+.wrong { font-weight: 650; }
+.protect { color: #7c3aed; font-weight: 650; }
+.example { color: #52606d; font-size: 13px; }
+.chips span { display: inline-flex; gap: 4px; align-items: center; margin: 3px 6px 3px 0; padding: 2px 4px 2px 9px; border: 1px solid #dbe1e8; border-radius: 12px; font-size: 13px; }
+#offline { background: #fff1f0; border-bottom: 1px solid #f0a8a0; color: #b42318; padding: 10px 20px; font-size: 14px; }
+#offline[hidden] { display: none; }
+#toast { position: fixed; right: 16px; bottom: 16px; max-width: 420px; background: #1f2933; color: white; padding: 10px 14px; border-radius: 8px; font-size: 14px; }
+#toast[hidden] { display: none; }
+.scroll { max-height: 60vh; overflow-y: auto; }
+.detail { display: grid; grid-template-columns: 3fr 2fr; gap: 1px; background: #dbe1e8; align-items: stretch; }
+@media (max-width: 1000px) { .detail { grid-template-columns: 1fr; } }
+.detail > div { background: #fff; min-width: 0; padding: 14px 16px; }
+/* 会議中の画面（index.html）と同じ作りにする（運用者 指摘 2026-09-16「読みづらくなっただけ」） */
+.caption { display: grid; grid-template-columns: 74px 130px 1fr 26px; gap: 8px; padding: 8px 0; border-bottom: 1px solid #edf0f2; font-size: 15px; line-height: 1.5; }
+.caption .time { color: #73808c; font-variant-numeric: tabular-nums; }
+.caption .speaker { font-weight: 650; }
+.caption .self { color: #8b929a !important; }
+.caption .unknown { color: #8b929a !important; font-style: italic; }
+.side .panel { border-bottom: 1px solid #e5e7eb; padding: 0 0 13px; margin-bottom: 14px; }
+.side h3 { font-size: 15px; margin: 0 0 7px; color: #344054; }
+.side ul { margin: 0; padding-left: 20px; }
+.side li { margin: 5px 0; line-height: 1.5; }
+.side .mine { background: #fff5cc; font-weight: 650; }
+.side .closed { opacity: .48; }
+.summary { white-space: pre-wrap; line-height: 1.5; }
+.participant { display: flex; gap: 7px; align-items: baseline; margin: 4px 0; }
+.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.topic-card { margin: 10px 0; padding: 10px 12px; border: 1px solid #dbe1e8; border-radius: 8px; background: #f8fafc; }
+.topic-card.active { border-left: 5px solid #2563eb; background: #f4f8ff; }
+.topic-title { line-height: 1.5; font-weight: 650; }
+table.todo th, table.todo td { padding: 5px 6px; font-size: 14px; }
+table.todo tr.mine td { background: #fff5cc; }
+table.todo tr.closed td { opacity: .5; }
+.label { display: inline-block; margin: 8px 0 4px; padding: 2px 9px; border-radius: 10px; font-size: 12px; font-weight: 700; color: #fff; }
+.label.decision { background: #20834b; }   /* 決定＝決まったこと */
+.label.question { background: #b7791f; }   /* 未解決・確認＝これから決めること */
+.label.todo { background: #2563eb; }       /* TODO＝誰かがやること */
+.label.done { background: #98a2b3; }
+.shot { display: grid; grid-template-columns: 74px 1fr; gap: 8px; padding: 10px 0; border-bottom: 1px solid #edf0f2; align-items: start; }
+.shot img { max-width: 320px; border: 1px solid #cbd2d9; border-radius: 6px; display: block; margin-bottom: 4px; }
+.download-group { margin: 8px 0; }
+a.download { display: inline-block; margin: 4px 6px 0 0; padding: 6px 11px; border: 1px solid #cbd2d9; border-radius: 6px;
+  background: white; color: #1f2933; text-decoration: none; font-size: 14px; }
+a.download:hover { border-color: #2563eb; color: #1d4ed8; }
+.verdict { margin: 6px 0; padding: 7px 9px; border-radius: 6px; background: #f5f7fa; font-size: 13px; line-height: 1.5; }
+.verdict.一致 { background: #eef8f1; } .verdict.要確認 { background: #fff6e8; } .verdict.不明 { background: #f2f3f5; }
+.verdict-row { border-top: 1px dotted #dbe1e8; padding: 6px 0; font-size: 13px; }
+.files a { display: inline-block; margin: 0 8px 6px 0; }
+</style>
+</head>
+<body>
+<div id="offline" hidden>この画面のサーバーに繋がりません（閉じたか、別の画面を見ています）。
+  デスクトップの「会議アシスタント」から開き直してください。</div>
+<header>
+  <h1>会議アシスタント</h1>
+  <nav>
+    <button data-tab="meetings">会議</button>
+    <button data-tab="candidates">辞書の候補</button>
+    <button data-tab="dictionary">辞書</button>
+    <button data-tab="voices">声の台帳</button>
+    <button data-tab="settings">設定</button>
+  </nav>
+  <span style="margin-left:auto"><button class="primary" id="start-meeting">会議を始める</button>
+    <span class="meta" id="meeting-state"></span></span>
+</header>
+<main>
+  <section id="tab-meetings">
+    <h2>会議（過去のログ）</h2>
+    <div class="note">終わった会議の一覧です。<b>会議の名前を押すと、会議中と同じ画面</b>（文字起こし・録音・決定事項・TODO・裏取り・議事録）が開きます。
+      <b>相手</b>はここで選べます（議事録とタスクの行き先になります）。仕上げが残っている会議だけ「仕上げる」が出ます。</div>
+    <div class="row"><button class="danger" id="delete-picked">選んだ会議を消す</button>
+      <span class="meta">消した会議はゴミ箱（workspace/99-trash）へ移すだけなので、戻せます</span></div>
+    <div id="meetings"></div>
+  </section>
+
+  <section id="tab-meeting" hidden>
+    <div class="row"><button class="plain" id="back">← 会議の一覧へ</button>
+      <h2 id="meeting-title" style="margin:0"></h2><span class="meta" id="meeting-sub"></span></div>
+    <div id="meeting-body" class="detail"></div>
+  </section>
+
+  <section id="tab-candidates" hidden>
+    <div class="row">
+      <h2 style="margin:0">会議のあとの候補</h2>
+      <select id="session"></select>
+      <span class="meta" id="target"></span>
+    </div>    <div class="note">会議ごとに出てきた候補です。行ごとに<b>「入れる」</b>か<b>「見送る」</b>を押してください（どちらも押さなければ、また次に出ます）。
+      正しい表記は、入れる前にその場で直せます。<br>
+      <b>置き換え</b>＝その語を全部この表記に直す。<b>守り札</b>＝その語を<b>壊さないように守る</b>（例: 辞書の「クラウド→Claude」が社名「MDクラウド」を「MDClaude」にしてしまうのを止める）。<br>
+      辞書に向くのは<b>何度も同じ形で出る語</b>（社名・製品名・人名）です。1 回だけの言い間違いや文脈の直し（「経団連」→「経営層」）は、別の会議で正しい語を壊すので見送ってください。</div>
+    <div class="scroll"><table>
+      <thead><tr><th>文字起こしの表記</th><th>正しい表記 / 中身</th><th>回数・出どころ</th><th>例</th><th style="width:150px"></th></tr></thead>
+      <tbody id="candidates"></tbody>
+    </table></div>
+    <div class="row"><span class="meta" id="candidate-note"></span></div>
+  </section>
+
+  <section id="tab-dictionary" hidden>
+    <div class="row">
+      <h2 style="margin:0">辞書</h2>
+      <select id="dictionary"></select>
+      <span class="meta" id="dictionary-path"></span>
+    </div>
+    <div class="row">
+      <input type="text" id="new-wrong" placeholder="文字起こしの表記（例: レブノル）">
+      →
+      <input type="text" id="new-right" placeholder="正しい表記（例: Revuno）">
+      <button class="primary" id="add">足す</button>
+    </div>
+    <p class="meta">足した語は、会議中なら次の行から、そうでなければ次の会議から効きます。</p>
+    <h2>守り札 <span class="meta">（この語の中では置き換えない。例: クラウドファンディング の中の「クラウド」）</span></h2>
+    <div class="row">
+      <input type="text" id="new-guard" placeholder="壊したくない語（例: MDクラウド）">
+      <button class="plain" id="add-guard">足す</button>
+    </div>
+    <div class="chips" id="guards"></div>
+    <h2 style="margin-top:14px">置き換え <span class="meta" id="count"></span></h2>
+    <div class="row"><input type="text" id="filter" placeholder="絞り込み"></div>
+    <div class="scroll"><table>
+      <thead><tr><th>文字起こしの表記</th><th>正しい表記</th><th style="width:70px"></th></tr></thead>
+      <tbody id="entries"></tbody>
+    </table></div>
+  </section>
+
+  <section id="tab-settings" hidden>
+    <h2>動かし方</h2>
+    <div class="note" id="capability"></div>
+    <div class="row" id="presets" style="flex-wrap:wrap;gap:8px"></div>
+
+    <h2 style="margin-top:22px">設定</h2>
+    <div class="note">よく触るものだけを出しています（<span id="settings-path" class="meta"></span>）。
+      押した時点で書き換わります。<b>会議中の設定は、次の会議から効きます。</b><br>
+      直す前のファイルは <code>workspace/99-trash/settings/</code> に退避します。
+      ここに無い設定は、設定ファイルを直接直してください。</div>
+    <table>
+      <thead><tr><th style="width:280px">できること</th><th style="width:170px">いま</th><th>説明</th></tr></thead>
+      <tbody id="settings"></tbody>
+    </table>
+  </section>
+
+  <section id="tab-voices" hidden>
+    <h2>哲学カードの行き先（ペルソナ）</h2>
+    <div class="note">議事録を Notion に登録すると、その人の<b>哲学カード</b>も登録します。行き先は
+      <b>People Master の「Speaker Labels」→ その人に紐づくペルソナ</b>で決まります（タスク管理 と同じ）。
+      ふだんは<b>ここを空のままで構いません</b>。<br>
+      この欄は<b>上書きと逃げ道</b>です — People Master にその名前が無いとき、複数の人に当たってしまうとき、
+      いつもと違うペルソナに入れたいときだけ書きます（複数は読点区切り。例:
+      <code>自社社長、自社開発者</code>）。<b>どちらでも決まらない人のカードは登録しません</b>
+      （違う人のカードにしないため）。登録のたびに、当たったペルソナ名が画面に出ます。</div>
+    <table>
+      <thead><tr><th>会議に出る名前</th><th>Notion のペルソナ名</th><th style="width:120px"></th></tr></thead>
+      <tbody id="personas"></tbody>
+    </table>
+
+    <h2 style="margin-top:22px">声の台帳</h2>
+    <div class="note" id="voice-note"></div>
+    <table>
+      <thead><tr><th>名前</th><th>覚えた会議</th><th style="width:220px"></th></tr></thead>
+      <tbody id="voices"></tbody>
+    </table>
+  </section>
+</main>
+<div id="toast" hidden></div>
+<script>
+const params = new URLSearchParams(location.search);
+// 話者の色は会議中の画面と同じ決め方（同じ人が同じ色になる）
+const color = name => { let n = 0; for (const c of name) n = (n * 31 + c.charCodeAt(0)) | 0; return `hsl(${Math.abs(n) % 360} 55% 42%)`; };
+const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+let dictionaries = [];
+
+function toast(message) {
+  const box = document.querySelector('#toast');
+  box.textContent = message; box.hidden = false;
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => { box.hidden = true; }, 5000);
+}
+async function api(path, body) {
+  let response;
+  try {
+    response = await fetch(path, body === undefined ? {} : {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  } catch (error) {
+    // サーバーが閉じている（60 分触らないと閉じる／別の画面を見ている）。黙って空にしない
+    document.querySelector('#offline').hidden = false;
+    throw new Error('サーバーに繋がりません（会議アシスタントを開き直してください）');
+  }
+  document.querySelector('#offline').hidden = true;
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.detail || `失敗しました（${response.status}）`);
+  return data;
+}
+function task_hubText(results) {
+  if (!results || !results.length) return '';
+  const added = results.filter(r => r.status === 'added').length;
+  const errors = results.filter(r => r.status === 'error').length;
+  return `／タスク管理 の辞書へ候補として ${added} 件${errors ? `（${errors} 件送れませんでした）` : ''}`;
+}
+function showTab(name) {
+  document.querySelectorAll('nav button').forEach(button => button.classList.toggle('on', button.dataset.tab === name));
+  document.querySelectorAll('main > section').forEach(section => { section.hidden = section.id !== `tab-${name}`; });
+  if (name === 'meetings') loadMeetings();
+  if (name === 'candidates') loadSessions();
+  if (name === 'dictionary') loadDictionaries();
+  if (name === 'voices') loadVoices();
+  if (name === 'settings') loadSettings();
+}
+document.querySelectorAll('nav button').forEach(button => { button.onclick = () => showTab(button.dataset.tab); });
+
+// ── 会議（過去のログ・聞き直す・直す）
+const clock = seconds => `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
+async function loadMeetings() {
+  let meetings, options;
+  try {
+    [meetings, options] = await Promise.all([api('/api/library/meetings'), api('/api/library/clients').catch(() => [])]);
+  } catch (error) {
+    document.querySelector('#meetings').innerHTML = `<p class="meta">${esc(error.message)}</p>`;
+    return;
+  }
+  clientOptions = options;
+  document.querySelector('#meetings').innerHTML = meetings.length ? `<table>
+    <thead><tr><th style="width:28px"><input type="checkbox" id="pick-all"></th><th>会議</th><th>相手</th><th>長さ</th><th>話した人</th><th>録音</th><th>議事録</th><th>仕上げ</th><th style="width:56px"></th></tr></thead>
+    <tbody>${meetings.map(meeting => `<tr data-row="${esc(meeting.name)}">
+      <td><input type="checkbox" class="pick"></td>
+      <td><a href="#" class="open wrong">${esc(meeting.name)}</a></td>
+      <td><select class="client">${['<option value="">（未選択 → 自社）</option>'].concat(clientOptions.map(option =>
+        `<option value="${esc(option.name)}"${option.name === meeting.client ? ' selected' : ''}>${esc(option.name)}</option>`)).join('')}</select></td>
+      <td class="meta">${esc(meeting.minutes_long)} 分・${esc(meeting.lines)} 行</td>
+      <td class="meta">${meeting.speakers.filter(name => !name.startsWith('不明話者')).map(esc).join('、') || '<span class="meta">（名前なし）</span>'}</td>
+      <td class="meta">${meeting.tracks.length ? `mp3 ${meeting.tracks.length} 本` : (meeting.wav_mb ? `wav ${esc(meeting.wav_mb)} MB` : 'なし')}</td>
+      <td class="meta">${meeting.minutes_url ? `<a href="${esc(meeting.minutes_url)}" target="_blank" rel="noreferrer">開く</a>`
+        : meeting.has_minutes ? `<a href="/api/library/file?session=${encodeURIComponent(meeting.name)}&kind=minutes">Markdown</a>` : '—'}</td>
+      <td class="meta">${meeting.remaining.length
+        ? `<button class="plain run">仕上げる</button> <span class="rest">${meeting.remaining.map(step => esc(step.label)).join('／')}</span>`
+        : '済み'}</td>
+      <td><button class="danger drop" title="この会議を消す（ゴミ箱へ）">消す</button></td></tr>`).join('')}</tbody></table>`
+    : '<p class="meta">（会議がありません）</p>';
+  const pickAll = document.querySelector('#pick-all');
+  if (pickAll) pickAll.onchange = event => {
+    document.querySelectorAll('[data-row] .pick').forEach(box => { box.checked = event.target.checked; });
+  };
+  document.querySelectorAll('[data-row]').forEach(row => {
+    const name = row.dataset.row;
+    row.querySelector('.open').onclick = event => { event.preventDefault(); openMeeting(name); };
+    row.querySelector('.client').onchange = async event => {
+      try { await api('/api/library/meeting-client', {session: name, client: event.target.value});
+        toast(event.target.value ? `${event.target.value} の会議にしました` : '自社の会議にしました'); }
+      catch (error) { toast(error.message); }
+    };
+    row.querySelector('.drop').onclick = () => deleteMeetings([name]);
+    const run = row.querySelector('.run');
+    if (run) run.onclick = async () => {
+      run.disabled = true;
+      try { await api('/api/library/finish', {session: name, client: row.querySelector('.client').value});
+        toast('仕上げを始めました（数分かかります。閉じても続きます）'); pollFinishInList(name, row); }
+      catch (error) { toast(error.message); run.disabled = false; }
+    };
+  });
+}
+async function deleteMeetings(names) {
+  if (!names.length) { toast('会議が選ばれていません'); return; }
+  if (!confirm(`${names.length} 件の会議を消しますか？\n${names.slice(0, 5).join('\n')}${names.length > 5 ? '\n…' : ''}\n\nゴミ箱（workspace/99-trash）へ移すだけなので戻せます`)) return;
+  try {
+    const result = await api('/api/library/meetings/delete', {sessions: names});
+    toast(`${result.moved.length} 件をゴミ箱へ移しました`);
+    loadMeetings();
+  } catch (error) { toast(error.message); }
+}
+function pickedMeetings() {
+  return [...document.querySelectorAll('[data-row]')].filter(row => row.querySelector('.pick').checked).map(row => row.dataset.row);
+}
+document.querySelector('#delete-picked').onclick = () => deleteMeetings(pickedMeetings());
+async function pollFinishInList(name, row) {
+  const status = await api(`/api/library/finish?session=${encodeURIComponent(name)}`).catch(() => null);
+  if (!status) return;
+  const rest = row.querySelector('.rest');
+  if (rest) rest.textContent = status.running ? (status.lines.slice(-1)[0] || '進行中…') : status.steps.map(step => step.label).join('／') || '済み';
+  if (status.running) { setTimeout(() => pollFinishInList(name, row), 3000); return; }
+  if (status.failed) toast(`仕上げが止まりました: ${status.error}`);   // 一覧を読み直すと消えるので先に知らせる
+  loadMeetings();
+}
+// 画面共有の控えを、その時刻の発言の間に差し込む（会議を見返すときに「何を見ながらの話か」が分かる）
+function withScreens(data) {
+  const items = data.rows.map((row, index) => ({at: row.start, row, index}));
+  (data.screens || []).forEach(screen => items.push({at: screen.at, screen}));
+  return items.sort((left, right) => left.at - right.at);
+}
+let player = null;
+let pickFrom = null;                       // 👤 で選んだ「ここから」の行
+// 名前を付けたあとの知らせ。覚えなかった理由（複数人が混ざっている等）を落とさない
+function renameToast(result) {
+  const parts = [`${result.lines} 行を「${result.new}」に直しました`];
+  if ((result.learned || []).length) parts.push(`声を覚えました（${result.learned.join('、')}）`);
+  for (const [who, why] of Object.entries(result.skipped || {})) parts.push(`${who}: ${why}`);
+  return parts.join('／');
+}
+
+async function openMeeting(name) {
+  const data = await api(`/api/library/meeting?session=${encodeURIComponent(name)}`);
+  showTab('meeting');
+  document.querySelector('main').classList.add('wide');
+  document.querySelector('#meeting-title').textContent = name;
+  document.querySelector('#meeting-sub').textContent =
+    `${data.client || '（自社）'}／${data.rows.length} 行${data.rebuilt ? '・録音から作り直した全文' : '・会議中の全文'}`
+    + (data.remaining.length ? `／仕上げ残り: ${data.remaining.map(step => step.label).join('・')}` : '');
+  const tracks = data.tracks || [];
+  const minutesLink = data.minutes_url
+    ? `<a href="${esc(data.minutes_url)}" target="_blank" rel="noreferrer">議事録を開く（Notion）</a>`
+    : data.minutes_text ? `<a href="/api/library/file?session=${encodeURIComponent(name)}&kind=minutes">議事録をダウンロード（Markdown）</a>`
+    : '<span class="meta">議事録はまだありません</span>';
+  document.querySelector('#meeting-body').innerHTML = `
+    <div>
+      ${tracks.length ? `<div class="row"><select id="track">${tracks.map(track =>
+        `<option value="${esc(track)}">${track === 'meeting' ? '統合（2 本を混ぜたもの）' : track === 'self' ? '自分のマイク' : '相手側'}</option>`).join('')}</select>
+        <audio id="player" controls preload="none" style="flex:1;min-width:260px"></audio>
+        <span class="meta">時刻を押すとそこから再生／✎ で直す</span></div>`
+        : '<div class="note">録音の mp3 がありません（下の「仕上げ」で作られます）。</div>'}
+      <div id="lines">${withScreens(data).map(item => {
+        if (item.screen) {
+          const file = encodeURIComponent(item.screen.file.split('/').pop());
+          const url = `/api/library/screen?session=${encodeURIComponent(name)}&name=${file}`;
+          return `<div class="shot"><span class="time meta">${clock(item.screen.at)}</span>
+            <div><a href="${url}" target="_blank" rel="noreferrer"><img src="${url}" loading="lazy"></a>
+              <span class="meta">${esc(item.screen.title || '画面共有')}${(item.screen.urls || []).map(one => `<br>${esc(one)}`).join('')}</span></div></div>`;
+        }
+        const row = item.row, self = row.speaker === '自分', unknown = row.speaker.startsWith('不明話者');
+        return `<div class="caption" data-line="${item.index}" data-start="${row.start}">
+          <span class="time"><a href="#" class="seek">${clock(row.start)}</a></span>
+          <span class="speaker ${self ? 'self' : ''} ${unknown ? 'unknown' : ''}" style="color:${self || unknown ? '' : color(row.speaker)}">${esc(row.speaker)}</span>
+          <span class="text${row.aizuchi ? ' meta' : ''}">${esc(row.text)}</span>
+          <button class="edit fix" title="聞き直して直す">✎</button>
+          ${unknown ? '<button class="edit who" title="この人に名前を付ける（ここから・ここまでで範囲を選べます）">👤</button>' : ''}</div>`;
+      }).join('')}</div>
+    </div>
+    <div class="side">
+      <div class="panel"><h3>参加者（${data.participants.length}）</h3>
+        ${data.participants.map(person => `<div class="participant">
+          <span class="dot" style="background:${person.name === '自分' ? '#8b929a' : color(person.name)}"></span>
+          <b>${esc(person.name)}</b> <span class="meta">${esc(person.minutes)} 分・${esc(person.lines)} 発言</span>
+          <button class="plain" data-name-speaker="${esc(person.name)}"
+            title="この会議の全文で、この人の名前を書き換えます">${person.name.includes('不明話者') ? '名前を付ける' : '名前を直す'}</button>
+          </div>`).join('')}
+        <div class="meta">「不明話者」のままだと、声の台帳にも哲学カードにも残りません。
+          誰か分かる人には名前を付けてください（声を聞いて確かめるなら「声の台帳」タブ）。</div></div>
+      <div class="panel"><h3>議事録</h3><div>${minutesLink}</div>
+        ${data.minutes_url
+          // 登録済み: 覚え書きだけ出す。URL を貼る欄は隠す（押す必要のないボタンを並べない）
+          ? `<div class="meta" style="margin-top:4px">${esc(data.minutes_note || '登録済み')}
+               ・<a href="#" id="relink">別の場所に付け替える</a></div>
+             <div class="row" id="relink-row" hidden><input type="text" id="minutes-url" placeholder="議事録の URL" style="flex:1;min-width:160px" value="${esc(data.minutes_url)}">
+               <button class="plain" id="save-url">覚える</button></div>`
+          : data.minutes_text
+          ? `${data.can_register_minutes
+               ? `<div class="row" style="margin-top:6px"><button class="primary" id="push-minutes">Notion に登録</button>
+                    <span class="meta" id="push-note">${esc(data.client || '相手')}の議事録 DB に、全文・タスク・哲学カード・製品 Fact まで登録します</span></div>`
+               : ''}
+             <div class="meta" style="margin-top:8px">議事録を置いた場所の URL を貼って「覚える」と、次からここから開けます</div>
+             <div class="row"><input type="text" id="minutes-url" placeholder="議事録の URL を貼る" style="flex:1;min-width:160px" value="">
+               <button class="plain" id="save-url">覚える</button></div>`
+          : '<div class="meta" style="margin-top:4px">先に「仕上げる」を実行すると、議事録ができます</div>'}</div>
+      <div class="panel"><h3>仕上げ</h3>${data.remaining.length
+        ? `<div class="meta">残り: ${data.remaining.map(step => esc(step.label)).join('／')}</div>
+           <div class="row"><button class="primary" id="finish">仕上げる</button><span class="meta" id="finish-note"></span></div>
+           <div class="meta" id="finish-log" style="white-space:pre-wrap"></div>`
+        : '<div class="meta">仕上げ済み</div>'}</div>
+      ${(data.pages || []).length ? `<div class="panel"><h3>画面共有で見せられたページ（${data.pages.length}）</h3>
+        <ul>${data.pages.map(page => `<li><span class="meta">${clock(page.first_at)}</span> ${esc(page.title || '（題名は読めず）')}
+          ${page.url ? `<br><a href="${esc(page.url)}" target="_blank" rel="noreferrer">${esc(page.url)}</a>` : ''}</li>`).join('')}</ul></div>` : ''}
+      <div class="panel"><h3>概要</h3><div class="summary">${esc(data.state.summary) || '<span class="meta">（なし）</span>'}</div></div>
+      <div class="panel"><h3>話題ごとの決まりごと（${data.state.decisions.length} 件の決定・${data.state.questions.length} 件の質問）</h3>
+        ${data.sections.map(section => `<div class="topic-card ${section.status === 'active' ? 'active' : ''}">
+          <div class="topic-title">${esc(section.topic)} <span class="meta">${clock(section.at)}</span></div>
+          ${section.decisions.length ? `<div class="label decision">決定 ${section.decisions.length}</div><ul>${section.decisions.map(item =>
+            `<li>${esc(item.text)}${item.owner ? ` <span class="meta">(${esc(item.owner)})</span>` : ''}</li>`).join('')}</ul>` : ''}
+          ${section.questions.length ? `<div class="label question">未解決・確認 ${section.questions.length}</div><ul>${section.questions.map(item =>
+            `<li>${esc(item.text)}${item.note ? `<br><span class="meta">${esc(item.note)}</span>` : ''}</li>`).join('')}</ul>` : ''}
+          ${section.todos.length ? `<div class="label todo">TODO ${section.todos.length}</div>` : ''}
+        </div>`).join('') || '<div class="meta">（なし）</div>'}</div>
+      <div class="panel"><h3>TODO（${data.state.todos.length}）</h3>
+        <table class="todo"><thead><tr><th>内容</th><th style="width:96px">担当</th><th style="width:88px">期限</th></tr></thead>
+        <tbody>${data.state.todos.map(item => `<tr class="${item.owner === '自分' ? 'mine' : ''} ${item.status && item.status !== 'open' ? 'closed' : ''}">
+          <td>${esc(item.text)}${item.status && item.status !== 'open' ? ` <span class="label done">${esc({done: '完了', asked: '会議中に確認済み', skipped: 'スルー'}[item.status] || item.status)}</span>` : ''}</td>
+          <td>${esc(item.owner) || '<span class="meta">未定</span>'}</td>
+          <td class="meta">${esc(item.due) || '—'}</td></tr>`).join('') || '<tr><td colspan="3" class="meta">（なし）</td></tr>'}</tbody></table>
+        <div class="meta">薄い行は会議中に片が付いたもの（完了・確認済み）。黄色は自分（自分）が担当のもの。</div></div>
+      <div class="panel"><h3>裏取り（${data.verifications.length}）</h3>${data.verifications.map(entry => `<div class="verdict ${esc(entry.verdict || '不明')}">
+        <b>${esc(entry.verdict || '不明')}</b> ${esc(entry.quote || '')}<br><span class="meta">${esc(entry.note || '')}</span>
+        ${(entry.sources || []).map(url => `<br><a href="${esc(url)}" target="_blank" rel="noreferrer" class="meta">${esc(String(url).slice(0, 60))}</a>`).join('')}
+      </div>`).join('') || '<div class="meta">（なし）</div>'}</div>
+      <div class="panel" style="border:0"><h3>ダウンロード</h3>
+        ${[['録音', ['audio:meeting', 'audio:self', 'audio:remote'], '🎧'],
+           ['議事録・材料', ['minutes', 'input'], '📝'],
+           ['全文', ['transcript', 'transcript_live'], '📄']].map(([label, kinds, icon]) => {
+          const files = (data.files || []).filter(file => kinds.includes(file.kind));
+          return files.length ? `<div class="download-group"><div class="meta">${label}</div>
+            ${files.map(file => `<a class="download" href="/api/library/file?session=${encodeURIComponent(name)}&kind=${encodeURIComponent(file.kind)}">
+              ${icon} ${esc(file.label)} <span class="meta">${esc(file.mb)} MB</span></a>`).join('')}</div>` : '';
+        }).join('') || '<span class="meta">（なし）</span>'}</div>
+    </div>`;
+  const body = document.querySelector('#meeting-body');
+  player = body.querySelector('#player');
+  const track = body.querySelector('#track');
+  const src = () => `/api/library/audio?session=${encodeURIComponent(name)}&track=${encodeURIComponent(track.value)}`;
+  if (player) { player.src = src(); track.onchange = () => { const at = player.currentTime; player.src = src(); player.currentTime = at; }; }
+  const finishButton = body.querySelector('#finish');
+  if (finishButton) finishButton.onclick = async () => {
+    finishButton.disabled = true;
+    try { await api('/api/library/finish', {session: name, client: data.client || ''});
+      toast('仕上げを始めました（数分かかります。閉じても続きます）'); pollFinishInDetail(name, body); }
+    catch (error) { toast(error.message); finishButton.disabled = false; }
+  };
+  // 議事録を Notion へ流し込む（押してから走る。運用者 決定 2026-09-17「安定したら自動化したい」）
+  const push = body.querySelector('#push-minutes');
+  if (push) push.onclick = async () => {
+    const note = body.querySelector('#push-note');
+    push.disabled = true; note.textContent = '登録しています…（十数秒）';
+    try {
+      const result = await api('/api/library/minutes/register', {session: name});
+      const chains = result.chains || {};
+      const parts = [];
+      if (result.linked) parts.push(`タスク ${result.linked} 件を紐付け`);
+      if (chains.cards) parts.push(`哲学カード ${chains.cards} 枚`);
+      if (chains.facts) parts.push(`製品 Fact ${chains.facts} 件`);
+      if ((result.skipped || []).length) parts.push(`書けなかったもの ${result.skipped.length} 件`);
+      toast(`${result.client} の議事録 DB に登録しました${parts.length ? '／' + parts.join('／') : ''}`);
+      // 飛ばした理由は消さずに残す（黙って減らさない）
+      if ((chains.notes || []).length) note.textContent = chains.notes.join(' ／ ');
+      openMeeting(name);
+    } catch (error) { note.textContent = error.message; push.disabled = false; }
+  };
+  // 会議のあとに名前を付ける（会議中は行の ✎、終わったあとはここ）
+  body.querySelectorAll('[data-name-speaker]').forEach(button => { button.onclick = async () => {
+    const old = button.dataset.nameSpeaker;
+    const next = prompt(`「${old}」の名前を入れてください（この会議の全文を書き換え、声も台帳に覚えます）`, '');
+    if (!next || !next.trim()) return;
+    button.disabled = true;
+    try {
+      const result = await api('/api/library/speaker/rename', {session: name, old, new: next.trim()});
+      toast(renameToast(result));
+      openMeeting(name);
+    } catch (error) { toast(error.message); button.disabled = false; }
+  }; });
+  const relink = body.querySelector('#relink');
+  if (relink) relink.onclick = event => { event.preventDefault(); body.querySelector('#relink-row').hidden = false; };
+  const saveUrl = body.querySelector('#save-url');
+  if (saveUrl) saveUrl.onclick = async () => {
+    try { await api('/api/library/minutes', {session: name, url: body.querySelector('#minutes-url').value});
+      toast('議事録の場所を覚えました（仕上げの残りからも外れます）'); openMeeting(name); }
+    catch (error) { toast(error.message); }
+  };
+  body.querySelectorAll('[data-line]').forEach(row => {
+    row.querySelector('.seek').onclick = event => {
+      event.preventDefault();
+      if (!player) { toast('録音がありません（mp3 に畳んでから聞けます）'); return; }
+      player.currentTime = Math.max(0, Number(row.dataset.start) - 1);   // 1 秒手前から（頭切れを防ぐ）
+      player.play();
+    };
+    // 1 つの「不明話者」に複数人が混ざっていることがある（声紋のまとまりが割れない）。
+    //   混ざったまま一括で名前を付けると、言っていない人の発言として台帳に残るので、範囲で選ぶ。
+    const who = row.querySelector('.who');
+    if (who) who.onclick = async () => {
+      const speaker = row.querySelector('.speaker').textContent;
+      const start = Number(row.dataset.start);
+      if (!pickFrom || pickFrom.speaker !== speaker) {
+        pickFrom = {speaker, start, row};
+        row.classList.add('picking');
+        toast(`ここから（${clock(start)}）。終わりの行の 👤 を押してください／同じ行をもう一度押すとこの行だけ`);
+        return;
+      }
+      const from = Math.min(pickFrom.start, start), to = Math.max(pickFrom.start, start);
+      const starts = [...body.querySelectorAll('[data-line]')]
+        .filter(one => one.querySelector('.speaker').textContent === speaker)
+        .map(one => Number(one.dataset.start))
+        .filter(at => at >= from && at <= to);
+      const next = prompt(`${clock(from)}〜${clock(to)} の ${starts.length} 行に名前を付けます`, '');
+      pickFrom.row.classList.remove('picking');
+      pickFrom = null;
+      if (!next || !next.trim()) return;
+      try {
+        const result = await api('/api/library/speaker/rename',
+          {session: name, old: speaker, new: next.trim(), starts});
+        toast(renameToast(result));
+        openMeeting(name);
+      } catch (error) { toast(error.message); }
+    };
+    row.querySelector('.fix').onclick = async () => {
+      const current = row.querySelector('.text').textContent;
+      const next = prompt('この行の文字', current);
+      if (next === null) return;
+      const speaker = prompt('話者名', row.querySelector('.speaker').textContent);
+      if (speaker === null) return;
+      try {
+        await api('/api/library/transcript/edit', {session: name, start: Number(row.dataset.start),
+          text: next.trim() === current ? '' : next.trim(),
+          speaker: speaker.trim() === row.querySelector('.speaker').textContent ? '' : speaker.trim()});
+        toast('直しました（議事録を作り直すと反映されます）');
+        openMeeting(name);
+      } catch (error) { toast(error.message); }
+    };
+  });
+}
+async function pollFinishInDetail(name, body) {
+  const status = await api(`/api/library/finish?session=${encodeURIComponent(name)}`).catch(() => null);
+  if (!status) return;
+  const log = body.querySelector('#finish-log'), note = body.querySelector('#finish-note');
+  if (log) log.textContent = (status.lines || []).slice(-6).join('\n');
+  if (note) note.textContent = status.running ? '進行中…' : status.failed ? `止まりました: ${status.error}` : status.steps.length ? `残り ${status.steps.length} 件` : '終わりました';
+  if (status.failed) { toast(`仕上げが止まりました: ${status.error}`); const again = body.querySelector('#finish'); if (again) again.disabled = false; }
+  if (status.running) { setTimeout(() => pollFinishInDetail(name, body), 3000); return; }
+  if (!status.steps.length) openMeeting(name);
+}
+document.querySelector('#back').onclick = () => { document.querySelector('main').classList.remove('wide'); showTab('meetings'); };
+
+let clientOptions = [];
+
+// ── 辞書の候補
+async function loadSessions() {
+  const sessions = await api('/api/library/sessions');
+  const select = document.querySelector('#session');
+  const wanted = select.value || params.get('session');
+  select.innerHTML = sessions.map(s => `<option value="${esc(s.name)}">${esc(s.name)}（残り ${s.pending} 件）</option>`).join('')
+    || '<option value="">（候補のある会議がありません）</option>';
+  if (wanted && sessions.some(s => s.name === wanted)) select.value = wanted;
+  loadCandidates();
+}
+document.querySelector('#session').onchange = loadCandidates;
+async function loadCandidates() {
+  const session = document.querySelector('#session').value;
+  const body = document.querySelector('#candidates');
+  if (!session) { body.innerHTML = '<tr><td colspan="5" class="meta">（なし）</td></tr>'; return; }
+  const data = await api(`/api/library/candidates?session=${encodeURIComponent(session)}`);
+  document.querySelector('#target').textContent =
+    `入れる先: ${data.dictionary === 'gemini' ? '外の文字起こし（Gemini）用の辞書' : '手元の文字起こし（Whisper）用の辞書'}`;
+  body.innerHTML = data.items.map((item, index) => `<tr data-index="${index}">
+      <td>${item.kind === 'protect' ? `<span class="protect">${esc(item.wrong)}</span>` : `<span class="wrong">${esc(item.wrong)}</span>`}</td>
+      <td>${item.kind === 'protect' ? '<span class="meta">この語を壊さないように守る（守り札）</span>'
+        : `<input type="text" class="right" value="${esc(item.right)}">`}</td>
+      <td class="meta">${esc(item.count)} 回・${esc(item.source)}${item.reason ? `<br>${esc(item.reason)}` : ''}</td>
+      <td class="example">${(item.examples || []).map(esc).join('<br>')}</td>
+      <td><button class="primary take">${item.kind === 'protect' ? '守り札に入れる' : '辞書に入れる'}</button>
+        <button class="plain skip">見送る</button></td></tr>`).join('')
+    || '<tr><td colspan="5" class="meta">（残っている候補はありません）</td></tr>';
+  body.querySelectorAll('[data-index]').forEach(row => {
+    const item = data.items[Number(row.dataset.index)];
+    const decide = async accept => {
+      const edited = row.querySelector('input.right');
+      try {
+        const result = await api('/api/library/candidates/decide', {session, items: [{
+          ...item, right: edited ? edited.value.trim() : item.right, accept}]});
+        toast(accept ? `${result.results[0].outcome}${task_hubText(result.task_hub)}` : '見送りました');
+        loadSessions();
+      } catch (error) { toast(error.message); }
+    };
+    row.querySelector('.take').onclick = () => decide(true);
+    row.querySelector('.skip').onclick = () => decide(false);
+  });
+}
+
+// ── 辞書
+async function loadDictionaries() {
+  try { dictionaries = await api('/api/library/dictionaries'); }
+  catch (error) { document.querySelector('#entries').innerHTML = `<tr><td colspan="3" class="meta">${esc(error.message)}</td></tr>`; return; }
+  const select = document.querySelector('#dictionary');
+  const wanted = select.value || (dictionaries.find(d => d.current) || {}).id;
+  select.innerHTML = dictionaries.map(d => `<option value="${esc(d.id)}">${esc(d.label)}${d.current ? '（使用中）' : ''}</option>`).join('');
+  if (wanted) select.value = wanted;
+  renderDictionary();
+}
+function currentDictionary() { return dictionaries.find(d => d.id === document.querySelector('#dictionary').value) || dictionaries[0]; }
+function renderDictionary() {
+  const dictionary = currentDictionary();
+  if (!dictionary) return;
+  document.querySelector('#dictionary-path').textContent = dictionary.path;
+  const filter = document.querySelector('#filter').value.trim();
+  const entries = dictionary.replacements.filter(e => !filter || e.wrong.includes(filter) || e.right.includes(filter));
+  document.querySelector('#count').textContent = `${dictionary.replacements.length} 語${filter ? `（うち ${entries.length} 語を表示）` : ''}`;
+  document.querySelector('#entries').innerHTML = entries.map(e => `<tr><td class="wrong">${esc(e.wrong)}</td><td>${esc(e.right)}</td>
+      <td><button class="danger" data-remove="${esc(e.wrong)}">外す</button></td></tr>`).join('')
+    || '<tr><td colspan="3" class="meta">（なし）</td></tr>';
+  document.querySelectorAll('[data-remove]').forEach(button => { button.onclick = async () => {
+    if (!confirm(`「${button.dataset.remove}」を辞書から外しますか？（直す前の辞書は退避します）`)) return;
+    try { await api('/api/library/dictionary/remove', {dictionary: dictionary.id, wrong: button.dataset.remove}); toast('外しました'); loadDictionaries(); }
+    catch (error) { toast(error.message); }
+  }; });
+  document.querySelector('#guards').innerHTML = dictionary.protect.map(word =>
+    `<span>${esc(word)}<button class="danger" data-guard="${esc(word)}" title="守り札から外す">×</button></span>`).join('') || '<span class="meta" style="border:0">（なし）</span>';
+  document.querySelectorAll('[data-guard]').forEach(button => { button.onclick = async () => {
+    if (!confirm(`守り札「${button.dataset.guard}」を外しますか？`)) return;
+    try { await api('/api/library/guard/remove', {dictionary: dictionary.id, word: button.dataset.guard}); toast('外しました'); loadDictionaries(); }
+    catch (error) { toast(error.message); }
+  }; });
+}
+document.querySelector('#dictionary').onchange = renderDictionary;
+document.querySelector('#filter').oninput = renderDictionary;
+document.querySelector('#add').onclick = async () => {
+  const wrong = document.querySelector('#new-wrong').value.trim(), right = document.querySelector('#new-right').value.trim();
+  try {
+    const result = await api('/api/library/dictionary/add', {dictionary: currentDictionary().id, wrong, right});
+    toast(result.added ? `「${wrong}」→「${right}」を足しました${task_hubText(result.task_hub)}` : `「${wrong}」は辞書に既にあります`);
+    document.querySelector('#new-wrong').value = ''; document.querySelector('#new-right').value = '';
+    loadDictionaries();
+  } catch (error) { toast(error.message); }
+};
+document.querySelector('#add-guard').onclick = async () => {
+  const word = document.querySelector('#new-guard').value.trim();
+  try {
+    const result = await api('/api/library/guard/add', {dictionary: currentDictionary().id, word});
+    toast(result.added ? `守り札「${word}」を足しました` : `「${word}」は守り札に既にあります`);
+    document.querySelector('#new-guard').value = ''; loadDictionaries();
+  } catch (error) { toast(error.message); }
+};
+
+// ── 動かし方（プリセット）と、この Mac でできること
+function renderCapability(data) {
+  const can = data.capability || {};
+  const marks = [
+    ['手元の文字起こし（Whisper）', can.local_stt],
+    ['手元の要約（Ollama）', can.local_llm],
+    ['Claude CLI（サブスク）', can.claude_cli],
+    ['Gemini の API キー', can.gemini_key],
+  ].map(([label, ok]) => `<span class="${ok ? 'can' : 'cannot'}">${ok ? '◯' : '×'} ${esc(label)}</span>`).join('　');
+  const offline = can.offline
+    ? '<b>この Mac はオフラインでも会議を通せます</b>（ネットが無くても字幕と要約が出ます）'
+    : 'この Mac は<b>オンライン前提</b>です' +
+      (data.why_not_offline || []).map(one => `<br>　・${esc(one)}`).join('');
+  document.querySelector('#capability').innerHTML =
+    `${marks}<br>メモリ ${esc(can.memory_gb)}GB${can.apple_silicon ? '・Apple Silicon' : ''}<br>${offline}`;
+
+  document.querySelector('#presets').innerHTML = (data.presets || []).map(preset => `
+    <button class="${preset.name === data.preset ? 'primary' : 'plain'}" data-preset="${esc(preset.name)}"
+      ${preset.usable ? '' : 'disabled'} style="text-align:left;padding:8px 12px">
+      <b>${esc(preset.label)}</b> <span class="meta">${esc(preset.cost)}</span><br>
+      <span class="meta">${esc(preset.usable ? preset.note : preset.missing.join('、') + 'が要ります')}</span>
+    </button>`).join('');
+  document.querySelectorAll('[data-preset]').forEach(button => { button.onclick = async () => {
+    const preset = (data.presets || []).find(one => one.name === button.dataset.preset);
+    if (!confirm(`「${preset.label}」にします。\n\n${preset.note}\n費用の目安: ${preset.cost}\n\n`
+                 + '次の会議から効きます。よろしいですか?')) return;
+    try { const result = await api('/api/library/settings/preset', {preset: preset.name});
+      toast(`「${result.label}」にしました（${Object.keys(result.changed).length} 項目）`); loadSettings(); }
+    catch (error) { toast(error.message); }
+  }; });
+}
+
+// ── 設定（機能の ON/OFF・よく触る値）
+async function loadSettings() {
+  const body = document.querySelector('#settings');
+  let data;
+  try { data = await api('/api/library/settings'); }
+  catch (error) { body.innerHTML = `<tr><td colspan="3" class="meta">${esc(error.message)}</td></tr>`; return; }
+  document.querySelector('#settings-path').textContent = data.path;
+  renderCapability(data);
+  body.innerHTML = data.fields.map(field => {
+    const key = esc(field.key);
+    let control;
+    if (field.kind === 'bool') {
+      control = `<button class="${field.value ? 'primary' : 'plain'}" data-toggle="${key}">${field.value ? 'ON' : 'OFF'}</button>`;
+    } else if (field.kind === 'choice') {
+      control = `<select data-choice="${key}">${field.choices.map(one =>
+        `<option${one === field.value ? ' selected' : ''}>${esc(one)}</option>`).join('')}</select>`;
+    } else {
+      control = `<input type="${field.kind === 'number' ? 'number' : 'text'}" data-value="${key}"
+        value="${esc(field.value)}" style="width:110px"> <button class="plain" data-save="${key}">覚える</button>`;
+    }
+    return `<tr><td class="wrong">${esc(field.label)}${field.danger ? ' <span class="danger-mark">外へ出る</span>' : ''}</td>
+      <td>${control}</td><td class="meta">${esc(field.help)}</td></tr>`;
+  }).join('') || '<tr><td colspan="3" class="meta">（設定ファイルが読めません）</td></tr>';
+
+  const save = async (key, value) => {
+    try { const saved = await api('/api/library/settings', {key, value});
+      toast(`${key} を ${saved.value} にしました`); loadSettings(); }
+    catch (error) { toast(error.message); }
+  };
+  body.querySelectorAll('[data-toggle]').forEach(button => { button.onclick = () => {
+    const field = data.fields.find(one => one.key === button.dataset.toggle);
+    // 外へ出る設定を on にするときだけ、もう一度聞く
+    if (field.danger && !field.value &&
+        !confirm(`${field.label}\n\n${field.help}\n\nこれを ON にしますか?`)) return;
+    save(button.dataset.toggle, !field.value);
+  }; });
+  body.querySelectorAll('[data-choice]').forEach(select => {
+    select.onchange = () => save(select.dataset.choice, select.value); });
+  body.querySelectorAll('[data-save]').forEach(button => { button.onclick = () => {
+    save(button.dataset.save, body.querySelector(`[data-value="${CSS.escape(button.dataset.save)}"]`).value); }; });
+}
+
+// ── Notion のペルソナ名（哲学カードの行き先）
+async function loadPersonas() {
+  const body = document.querySelector('#personas');
+  let data;
+  try { data = await api('/api/library/personas'); }
+  catch (error) { body.innerHTML = `<tr><td colspan="3" class="meta">${esc(error.message)}</td></tr>`; return; }
+  body.innerHTML = data.people.map(person => `<tr>
+      <td class="wrong">${esc(person.speaker)}${person.self ? ' <span class="meta">（自分）</span>' : ''}</td>
+      <td><input type="text" data-persona="${esc(person.speaker)}" value="${esc(person.persona)}"
+           placeholder="（未設定 → 登録しません）例: 自社社長、自社開発者" style="width:100%"></td>
+      <td><button class="plain" data-save-persona="${esc(person.speaker)}">覚える</button></td></tr>`).join('')
+    || '<tr><td colspan="3" class="meta">（まだ誰もいません）</td></tr>';
+  body.querySelectorAll('[data-save-persona]').forEach(button => { button.onclick = async () => {
+    const speaker = button.dataset.savePersona;
+    const input = body.querySelector(`[data-persona="${CSS.escape(speaker)}"]`);
+    try {
+      const saved = await api('/api/library/personas', {speaker, persona: input.value});
+      toast(saved.persona ? `${speaker} → ${saved.persona} を覚えました` : `${speaker} の対応を外しました`);
+    } catch (error) { toast(error.message); }
+  }; });
+  body.querySelectorAll('[data-persona]').forEach(input => { input.onkeydown = event => {
+    if (event.key === 'Enter') body.querySelector(`[data-save-persona="${CSS.escape(input.dataset.persona)}"]`).click();
+  }; });
+}
+
+// ── 声の台帳
+async function loadVoices() {
+  loadPersonas();
+  let data;
+  try { data = await api('/api/library/voices'); }
+  catch (error) { document.querySelector('#voices').innerHTML = `<tr><td colspan="3" class="meta">${esc(error.message)}</td></tr>`; return; }
+  document.querySelector('#voice-note').innerHTML = data.enabled
+    ? '会議のあとに、名前を付けた相手の声を覚えます。次の会議でその人が「不明話者」として出ると、参加者欄に「〇〇さん？」が出ます（自動では名前を付けません）。<br>声紋は個人を識別できる情報です。この Mac の中にだけ置き、外へは出しません。'
+    : '声の台帳は切ってあります（settings.yaml の meeting.voice_library.enabled）。';
+  document.querySelector('#voices').innerHTML = data.people.map(p => `<tr><td class="wrong">${esc(p.name)}</td>
+      <td class="meta">${esc(p.meetings)} 本（${p.sessions.map(esc).join('、')}）</td>
+      <td><button class="plain" data-listen="${esc(p.name)}" title="この人の声を聞く">▶ 声を聞く</button>
+        <button class="plain" data-rename="${esc(p.name)}">名前を直す</button>
+        <button class="danger" data-forget="${esc(p.name)}">台帳から外す</button>
+        <div class="meta sample"></div></td></tr>`).join('')
+    || '<tr><td colspan="3" class="meta">（まだ誰もいません）</td></tr>';
+  // 声を聞いて「これは参加者Dさんだ」と確かめられるように（代表的な発言を 1 つ再生）
+  document.querySelectorAll('[data-listen]').forEach(button => { button.onclick = async () => {
+    const note = button.parentElement.querySelector('.sample');
+    try {
+      const sample = await api(`/api/library/voices/sample?name=${encodeURIComponent(button.dataset.listen)}`);
+      note.textContent = `${sample.session}（${clock(sample.start)}）「${sample.text.slice(0, 40)}」`;
+      if (!window.voicePlayer) window.voicePlayer = new Audio();
+      const player = window.voicePlayer;
+      player.src = `/api/library/audio?session=${encodeURIComponent(sample.session)}&track=${encodeURIComponent(sample.track)}`;
+      player.currentTime = 0;
+      player.onloadedmetadata = () => { player.currentTime = Math.max(0, sample.start - 0.3); player.play(); };
+      player.ontimeupdate = () => { if (player.currentTime >= sample.end + 0.3) player.pause(); };
+    } catch (error) { note.textContent = error.message; }
+  }; });
+  document.querySelectorAll('[data-rename]').forEach(button => { button.onclick = async () => {
+    const next = prompt('新しい名前', button.dataset.rename);
+    if (!next || next.trim() === button.dataset.rename) return;
+    try { await api('/api/library/voices/rename', {old: button.dataset.rename, new: next.trim()}); toast('直しました'); loadVoices(); }
+    catch (error) { toast(error.message); }
+  }; });
+  document.querySelectorAll('[data-forget]').forEach(button => { button.onclick = async () => {
+    if (!confirm(`「${button.dataset.forget}」の声を台帳から外しますか？（ゴミ箱に退避します）`)) return;
+    try { await api('/api/library/voices/forget', {name: button.dataset.forget}); toast('外しました'); loadVoices(); }
+    catch (error) { toast(error.message); }
+  }; });
+}
+
+// 会議を始める（この画面はいつでも開ける。会議中の画面は別のポートで開く）
+async function refreshMeetingState() {
+  const status = await api('/api/library/meeting-status').catch(() => null);
+  const note = document.querySelector('#meeting-state');
+  if (!status) { note.textContent = ''; return; }
+  note.innerHTML = status.running
+    ? `会議中です — <a href="${esc(status.url)}" target="_blank" rel="noopener">会議の画面を開く</a>`
+    : '';
+  document.querySelector('#start-meeting').textContent = status.running ? '会議の画面へ' : '会議を始める';
+}
+document.querySelector('#start-meeting').onclick = async () => {
+  const status = await api('/api/library/meeting-status').catch(() => ({running: false}));
+  if (status.running) { window.open(status.url, '_blank', 'noopener'); return; }
+  try {
+    await api('/api/library/start-meeting', {});
+    toast('会議を始めます（ターミナルが開きます。準備ができると会議の画面が開きます）');
+    setTimeout(refreshMeetingState, 4000);
+  } catch (error) { toast(error.message); }
+};
+refreshMeetingState();
+setInterval(refreshMeetingState, 15000);
+
+showTab(params.get('tab') || 'meetings');
+// 会議の詳細を URL から直接開けるようにする（`?meeting=2026-09-16_1627`）。
+//   一覧を押さないと開けなかったので、会議を人に渡す・あとで開き直すのに URL が使えなかった。
+if (params.get('meeting')) openMeeting(params.get('meeting'));
+</script>
+</body>
+</html>

@@ -1,0 +1,478 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>会議ダッシュボード</title>
+<style>
+:root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #1f2937; background: #f4f6f8; }
+* { box-sizing: border-box; } html, body { height: 100%; } body { margin: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; } #top { padding: 10px 16px; background: white; border-bottom: 1px solid #dbe1e8; display: flex; gap: 18px; align-items: center; flex-wrap: wrap; font-size: 14px; } #name { font-weight: 700; font-size: 16px; } .meter { display: inline-flex; align-items: center; gap: 5px; } .bar { width: 90px; height: 8px; background: #e5e7eb; border-radius: 6px; overflow: hidden; } .bar i { display: block; height: 100%; background: #32a852; width: 0; } .meter.disabled { color: #98a2b3; } .meter.disabled .bar i { background: #98a2b3; } #replay-note { color: #667085; } #warning { color: #b45309; } #metrics { color: #52606d; } main { flex: 1; min-height: 0; display: grid; grid-template-columns: 3fr 2fr; gap: 1px; background: #dbe1e8; } #top, #external, #preflight { flex: 0 0 auto; } section { background: #fff; min-width: 0; min-height: 0; } #captions { overflow-y: auto; padding: 14px 18px; } .caption { display: grid; grid-template-columns: 92px 120px 1fr 24px 24px; gap: 8px; padding: 8px 0; border-bottom: 1px solid #edf0f2; font-size: 15px; line-height: 1.5; } .time { color: #73808c; font-variant-numeric: tabular-nums; } .time small { display: block; font-size: 13px; } .speaker { font-weight: 650; cursor: pointer; } .self { color: #8b929a !important; } .unknown { color: #8b929a !important; font-style: italic; } .edit { border: 0; background: transparent; color: #667085; cursor: pointer; font-size: 14px; } .dispatch-button { margin-left: 6px; } .dispatch-mark { margin-left: 3px; } .dispatch-ok { color: #14804a; } .dispatch-fail { color: #b42318; } .dispatch-skip { color: #98a2b3; } #state { overflow-y: auto; padding: 14px; display: flex; flex-direction: column; font-size: 15px; line-height: 1.5; } .panel { border-bottom: 1px solid #e5e7eb; padding: 0 0 13px; margin-bottom: 14px; } #models-panel { margin-top: auto; margin-bottom: 0; border-bottom: 0; } h2 { font-size: 15px; margin: 0 0 7px; color: #344054; } .summary { white-space: pre-wrap; line-height: 1.5; } .topic-flow { margin: 0; padding: 0; list-style: none; } .topic-card { margin: 14px 0; padding: 12px 14px; border: 1px solid #dbe1e8; border-radius: 8px; background: #f8fafc; } .topic-card.active { border-left: 5px solid #2563eb; background: #f4f8ff; } .topic-title { line-height: 1.5; } .topic-title.active { font-weight: 700; } .topic-asks { margin: 10px 0 0; padding: 0; list-style: none; } .topic-asks li { margin: 0; padding: 9px 0; border-top: 1px dotted #c9d1db; } .topic-asks li:first-child { border-top: 0; padding-top: 4px; } .ask-line { display: flex; align-items: flex-start; gap: 10px; } .ask-badge { flex: 0 0 14px; width: 14px; height: 14px; margin-top: 4px; border-radius: 50%; color: white; font-size: 10px; line-height: 14px; text-align: center; font-weight: 700; } .legend { display: inline-flex; gap: 12px; align-items: center; font-weight: 400; } .legend span { display: inline-flex; align-items: center; gap: 4px; } .legend .ask-badge { margin-top: 0; } .ask-badge.pending { background: #7b8794; } .ask-badge.moved { background: #b7791f; } .ask-badge.asked { background: #20834b; } .ask-badge.skipped { background: #b54747; } .ask-body { min-width: 0; } .ask-note { display: block; margin-top: 2px; } ul { margin: 0; padding-left: 20px; } li { margin: 5px 0; line-height: 1.5; } .mine { background: #fff5cc; font-weight: 650; } .closed { opacity: .48; } .meta { color: #667085; font-size: 13px; } .participant { display: flex; gap: 6px; align-items: baseline; margin: 5px 0; } .participant .edit { padding: 0; } #models { line-height: 1.5; } .external { color: #b42318; } #plan { width: 82px; padding: 3px 5px; border: 1px solid #cbd2d9; border-radius: 5px; font-size: 14px; } .review-button { padding: 4px 11px; border: 1px solid #2563eb; border-radius: 6px; background: #2563eb; color: white; font-size: 14px; cursor: pointer; } .review-button:disabled { background: #98a2b3; border-color: #98a2b3; cursor: progress; } #review-note { color: #52606d; } #external { margin: 0; padding: 14px 18px; background: #fff1f0; border-bottom: 1px solid #f0a8a0; font-size: 15px; line-height: 1.6; } #external h2 { margin: 0 0 6px; color: #b42318; } #external .files { color: #52606d; } #external .warn { color: #b42318; font-weight: 650; } #ex-actions { margin-top: 10px; display: flex; gap: 8px; } #ex-actions[hidden] { display: none; } #preflight { margin: 0; padding: 14px 18px; background: #fffbe6; border-bottom: 1px solid #f0d98c; font-size: 15px; line-height: 1.6; } #preflight h2 { margin: 0 0 6px; } #preflight .warn { color: #b45309; font-weight: 650; } #preflight .speak { color: #b42318; font-weight: 700; } #pf-measure, #pf-actions { margin-top: 10px; display: flex; gap: 8px; } /* display:flex は [hidden] を打ち消すので、明示的に消す（2026-09-12 実機で両方出た） */ #pf-measure[hidden], #pf-actions[hidden] { display: none; } .verdict { grid-column: 3 / span 3; margin-top: 5px; padding: 7px 9px; border-radius: 6px; background: #f5f7fa; font-size: 13px; line-height: 1.5; } .verdict.一致 { background: #eef8f1; } .verdict.要確認 { background: #fff6e8; } .verdict.不明 { background: #f2f3f5; } .verdict b { margin-right: 6px; } .verdict a { color: #2563eb; word-break: break-all; } #prep-drop { border: 1px dashed #cbd2d9; border-radius: 8px; padding: 9px 11px; font-size: 13px; } #prep-drop.over { border-color: #2563eb; background: #f4f8ff; } .prep-pick { color: #2563eb; cursor: pointer; text-decoration: underline; } #prep-list { margin-top: 7px; } #prep-list .file { display: flex; gap: 6px; align-items: baseline; } #prep-paste-box { margin-top: 7px; } #prep-paste { width: 100%; margin: 6px 0; padding: 6px; border: 1px solid #cbd2d9; border-radius: 6px; font-size: 13px; font-family: inherit; } #prep-note { margin-top: 6px; } #prep-note.warn { color: #b45309; } #screens-latest { width: 100%; border: 1px solid #dbe1e8; border-radius: 6px; display: block; } #screens-list { margin: 8px 0 0; padding-left: 18px; } #screens-list li { margin: 3px 0; } .caption { position: relative; } .picker { position: absolute; right: 8px; top: 100%; z-index: 40; width: 300px; padding: 11px 12px; background: #fff; border: 1px solid #cbd2d9; border-radius: 9px; box-shadow: 0 8px 22px rgba(16,24,40,.16); font-size: 14px; } .pick-title { font-weight: 650; margin-bottom: 8px; } .pick-list { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; } .pick { padding: 4px 10px; border: 1px solid #cbd2d9; border-radius: 999px; background: #f8fafc; cursor: pointer; font-size: 14px; } .pick:hover { border-color: #2563eb; color: #2563eb; } .pick-new input { width: 100%; padding: 5px 7px; border: 1px solid #cbd2d9; border-radius: 6px; font-size: 14px; font-family: inherit; } .pick-foot { display: flex; gap: 8px; margin-top: 9px; } .pick-add { padding: 4px 11px; border: 1px solid #2563eb; border-radius: 6px; background: #2563eb; color: #fff; cursor: pointer; font-size: 14px; } .pick-reset { padding: 4px 11px; border: 1px solid #cbd2d9; border-radius: 6px; background: #fff; color: #52606d; cursor: pointer; font-size: 14px; } .finish-button { padding: 4px 11px; border: 1px solid #b42318; border-radius: 6px; background: white; color: #b42318; font-size: 14px; cursor: pointer; } .finish-button:disabled { border-color: #98a2b3; color: #98a2b3; cursor: default; }
+</style>
+</head>
+<body>
+<div id="top"><span id="name">会議</span><span>経過 <b id="elapsed">0:00</b></span><span>現在 <b id="clock">--:--:--</b></span><span id="self-meter" class="meter">マイク <span class="bar"><i id="self-level"></i></span></span><span id="remote-meter" class="meter">相手 <span class="bar"><i id="remote-level"></i></span></span><span id="replay-note"></span><span>状態更新 <b id="age">—</b></span><span id="plan-box">終了予定 <input id="plan" type="text" placeholder="15:30 か 60"></span><button id="review" class="review-button">いま見直す</button><button id="finish" class="finish-button">会議を終了</button><span id="review-note" class="meta"></span><span id="warning"></span><span id="metrics"></span></div>
+<div id="finish-ask" hidden><h2>このあとの仕上げを、いま走らせますか?</h2><div id="fa-body"></div><div id="fa-actions"><button id="fa-now" class="review-button">いま仕上げる</button><button id="fa-later" class="finish-button">あとでやる</button></div></div>
+<div id="external" hidden><h2>録音を外（Google）へ出しますか?</h2><div id="ex-body"></div><div id="ex-actions"><button id="ex-send" class="finish-button">外へ出す</button><button id="ex-keep" class="review-button">手元で作る</button></div></div>
+<div id="preflight" hidden><h2 id="pf-title">起動セルフチェック</h2><div id="pf-body"></div><div id="pf-measure" hidden><button id="pf-go" class="review-button">測る（3秒）</button><button id="pf-skip" class="finish-button">飛ばす</button><button id="pf-now" class="finish-button">すぐ開始（会議が始まっている）</button><button id="pf-stop" class="finish-button">中止</button></div><div id="pf-actions" hidden><button id="pf-start" class="review-button">このまま開始</button><button id="pf-retry" class="finish-button">もう一度測る</button><button id="pf-cancel" class="finish-button">中止</button></div></div>
+<main><section id="captions"></section><section id="state"><div class="panel"><h2>参加者</h2><div id="participants" class="meta">（検出待ち）</div></div><div class="panel" id="client-panel"><h2>この会議の相手 <span class="meta">（議事録・タスク・辞書の行き先）</span></h2><div class="row-inline"><select id="client"></select> <span id="client-note" class="meta"></span></div></div><div class="panel" id="prep-panel"><h2>事前資料 <span class="meta">（会議ごとに空から始まります。途中でも足せます）</span></h2><div id="prep-drop"><label class="prep-pick">ファイルを選ぶ<input id="prep-file" type="file" multiple accept=".md,.txt,.csv,.json,.vtt,.pdf,.docx,.xlsx,.pptx" hidden></label><span class="meta"> かここへドラッグ＆ドロップ（PDF・Word・Excel・PowerPoint／.md .txt .csv .json .vtt）</span></div><div id="prep-list" class="meta">（なし）</div><details id="prep-paste-box"><summary class="meta">貼り付けで足す</summary><textarea id="prep-paste" rows="4" placeholder="議題・前回タスク・用語などを貼る"></textarea><button id="prep-paste-add" class="review-button">足す</button></details><div id="prep-note" class="meta"></div></div><div class="panel" id="screens-panel" hidden><h2>画面共有 <span class="meta" id="screens-count"></span></h2><a id="screens-latest-link" href="#" target="_blank" rel="noopener"><img id="screens-latest" alt="いちばん新しい画面共有"></a><ul id="screens-list" class="meta"></ul></div><div class="panel"><h2>論点の流れ <span class="meta legend"><span><i class="ask-badge pending"></i>未</span><span><i class="ask-badge moved"></i>話題は移ったが未</span><span><i class="ask-badge asked">✓</i>聞いた</span><span><i class="ask-badge skipped"></i>スルー</span></span></h2><ul id="topic-flow" class="topic-flow"></ul><div id="summary" class="summary meta"></div></div><div class="panel"><h2>決定事項</h2><ul id="decisions"></ul></div><div class="panel"><h2>TODO</h2><ul id="todos"></ul></div><div class="panel"><h2>未解決の質問（参加者が出した問い・未回答）</h2><ul id="questions"></ul></div><div class="panel" id="glossary-panel"><h2>辞書に足す <span class="meta">（次の行から効きます）</span></h2><div class="row-inline"><input id="gl-wrong" type="text" placeholder="文字起こしの表記" style="width:40%"> → <input id="gl-right" type="text" placeholder="正しい表記" style="width:40%"> <button id="gl-add" class="review-button">足す</button></div><div id="gl-note" class="meta"></div><div class="meta"><a href="/library?tab=dictionary" target="_blank" rel="noopener">会議アシスタントを開く</a>（一覧・外す・守り札・声の名前）</div></div><div id="models-panel" class="panel meta"><h2>モデル</h2><div id="models">（読込中）</div></div></section></main>
+<script>
+const captions = document.querySelector('#captions');
+let info = {}, latestState = {}, lastStateAt = 0, latestSegmentEnd = 0, hovering = false;
+const closed = new Set(['done', 'dropped', 'superseded', 'answered', 'closed']);
+const color = name => { let n = 0; for (const c of name) n = (n * 31 + c.charCodeAt(0)) | 0; return `hsl(${Math.abs(n) % 360} 55% 42%)`; };
+const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function time(value) { const seconds = Math.max(0, Math.floor(Number(value) || 0)); const h = Math.floor(seconds / 3600), m = Math.floor((seconds % 3600) / 60), s = seconds % 60; return h ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`; }
+function startedAt() { if (typeof info.started_at === 'number') return info.started_at * 1000; const parsed = Date.parse(info.started_at); return Number.isNaN(parsed) ? (Number(info.started_at) || 0) * 1000 : parsed; }
+// 時刻は「会議の時計」（開始 + 経過）から出す。行に入っている timestamp は**届いた時刻**で、
+//   30 秒の窓でまとめて届くと 1 窓ぶんが同じ時刻になる（2026-09-14 の会議で実際にそうなった）。
+function clockTime(data) { const start = startedAt(); let at = start ? start + (Number(data.start_time) || 0) * 1000 : Date.parse(data.timestamp); return at ? new Date(at).toLocaleTimeString('ja-JP', {hour12:false}) : '—'; }
+const renames = {};
+// 改名後に旧ラベルで届く発話（改名の瞬間に文字起こし中だったもの）を、表示時に新名へ揃える
+function resolveRename(name) { const seen = new Set(); while (renames[name] && !seen.has(name)) { seen.add(name); name = renames[name]; } return name; }
+// 窓の切れ目で前の文から落ちた句点を、前の行へ返す（会議中の見た目だけを直す）
+// 2026-09-18 運用者 指摘「丸の位置、区切りがちょっとおかしい」。本文の中身は触らない
+function amendCaption(data) {
+  const row = [...captions.querySelectorAll('.caption')]
+    .find(one => Math.abs(Number(one.dataset.start) - Number(data.start_time)) < 0.05);
+  if (row) row.children[2].textContent = data.text;
+}
+// 画面共有の控え — 会議中にも見られるようにする
+// 2026-09-18 運用者 指摘「これは会議終了後にならないと見れないのね」。撮ったそばから
+//   screens.jsonl に積んでいるので、会議中でも読める
+async function loadScreens() {
+  let data;
+  try { data = await (await fetch('/api/screens')).json(); } catch (error) { return; }
+  const panel = document.querySelector('#screens-panel');
+  const pages = data.pages || [];
+  if (!pages.length && !data.latest) { panel.hidden = true; return; }
+  panel.hidden = false;
+  document.querySelector('#screens-count').textContent = `（${pages.length} 件）`;
+  const image = document.querySelector('#screens-latest');
+  const link = document.querySelector('#screens-latest-link');
+  if (data.latest) {
+    const name = data.latest.split('/').pop();
+    image.src = `/screens/${name}?t=${Date.now()}`;   // 毎回取り直す（同じ名前でも中身が変わる）
+    link.href = `/screens/${name}`;
+  }
+  const list = document.querySelector('#screens-list');
+  list.innerHTML = '';
+  pages.slice(-6).reverse().forEach(page => {
+    const item = document.createElement('li');
+    const label = page.title || page.url || '（見出しなし）';
+    item.textContent = `${time(page.first_at)} ${label}`;
+    if (page.url) { item.title = page.url; }
+    list.append(item);
+  });
+}
+setInterval(loadScreens, 20000);
+setTimeout(loadScreens, 2000);
+function bindSpeakerActions(row) { const speaker = row.querySelector('.speaker'); const edit = row.querySelector('.edit'); speaker.onclick = () => renameSpeaker(row.dataset.speaker); speaker.title = row.dataset.speaker === '不明話者?' ? '行の ✎ で割り当て' : ''; edit.onclick = () => relabelSegment(Number(row.dataset.start), Number(row.dataset.end), row.dataset.speaker, row); }
+// 同じ行を二度描かない。繋ぎ直すと**サーバーが履歴を全部送り直す**ので、
+//   弾かないと会議中に一度切れただけで全行が二重になる（2026-09-21 に実際に見た）。
+//   鍵に本文を入れない——あとから直した行（amend）が、履歴の再生で元の本文のまま増えるため。
+const drawnCaptions = new Set();
+function captionKey(data) { return `${data.start_time}|${data.end_time}|${data.speaker || ''}`; }
+function renderCaption(data) { if (drawnCaptions.has(captionKey(data))) return; drawnCaptions.add(captionKey(data)); const row = document.createElement('div'); const speaker = resolveRename(data.speaker || '不明話者?'); row.className = 'caption'; row.dataset.speaker = speaker; if (speaker && speaker !== '不明話者?') knownSpeakers.add(speaker); row.dataset.start = String(data.start_time); row.dataset.end = String(data.end_time); latestSegmentEnd = Math.max(latestSegmentEnd, Number(data.end_time) || 0); const unknown = speaker === '不明話者?'; const self = speaker === info.self_name; row.innerHTML = `<span class="time">${clockTime(data)}<small>経過 ${time(data.start_time)}</small></span><span class="speaker ${unknown ? 'unknown' : ''} ${self ? 'self' : ''}" style="color:${unknown || self ? '' : color(speaker)}">${esc(speaker)}</span><span>${esc(data.text)}</span><button class="edit" title="この行の話者名を変更">✎</button><button class="edit verify">🔍</button>`; styleVerifyButton(row.querySelector('.verify')); bindSpeakerActions(row); bindVerifyAction(row); insertCaption(row, Number(data.start_time) || 0); }
+// 話された順に差し込む。会議中の文字起こしは 30 秒の窓ごとに、系統（自分・相手）が交互に届くので、
+//   到着順に並べると会話が噛み合わない（2026-09-14 の会議で 158 箇所・最大 34 秒ぶん入れ替わった）。
+//   届くのは大半が末尾なので、後ろから見ていけばほぼ 1 回で収まる。
+function insertCaption(row, start) {
+  let cursor = captions.lastElementChild;
+  while (cursor && (Number(cursor.dataset.start) || 0) > start) cursor = cursor.previousElementSibling;
+  if (cursor) cursor.after(row); else captions.prepend(row);
+  if (!hovering && row === captions.lastElementChild) captions.scrollTop = captions.scrollHeight;
+}
+async function renameSpeaker(old) { if (old === '不明話者?') return; const next = prompt('新しい話者名', old); if (!next || next.trim() === old) return; await fetch('/api/rename', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({old, new:next.trim()})}); }
+// 行の話者を割り当てる。既存の話者から選べるようにした（2026-09-18 運用者 指摘
+// 「行クリックで名前を直接入力する他に、既存の話者を選択できてほしい」）。
+// 会議中に毎回名前を打ち直すのは現実的でないため、押すだけで済む道を先に置く。
+const knownSpeakers = new Set();
+let openPicker = null;
+function closePicker() { if (openPicker) { openPicker.remove(); openPicker = null; } }
+document.addEventListener('click', event => { if (openPicker && !openPicker.contains(event.target) && !event.target.closest('.edit')) closePicker(); });
+document.addEventListener('keydown', event => { if (event.key === 'Escape') closePicker(); });
+
+async function sendRelabel(startTime, endTime, old, next) {
+  if (!next || next === old) return;
+  await fetch('/api/relabel', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({start_time:startTime, end_time:endTime, old, new:next})});
+}
+
+function relabelSegment(startTime, endTime, old, anchor) {
+  closePicker();
+  const box = document.createElement('div');
+  box.className = 'picker';
+  const names = [...knownSpeakers].filter(name => name !== old).sort();
+  const buttons = names.map(name => `<button class="pick" data-name="${esc(name)}">${esc(name)}</button>`).join('');
+  box.innerHTML = `<div class="pick-title">この行は誰の発言？</div>`
+    + (buttons ? `<div class="pick-list">${buttons}</div>` : '<div class="meta">まだ名前の付いた人がいません</div>')
+    + `<div class="pick-new"><input id="pick-input" type="text" placeholder="新しい名前" value=""></div>`
+    + `<div class="pick-foot"><button class="pick-add">この名前にする</button>`
+    + (old === '不明話者?' ? '' : '<button class="pick-reset">不明話者に戻す</button>')
+    + `</div>`;
+  (anchor || document.body).append(box);
+  openPicker = box;
+  const input = box.querySelector('#pick-input');
+  box.querySelectorAll('.pick').forEach(button => {
+    button.onclick = async () => { closePicker(); await sendRelabel(startTime, endTime, old, button.dataset.name); };
+  });
+  box.querySelector('.pick-add').onclick = async () => {
+    const next = input.value.trim(); closePicker(); await sendRelabel(startTime, endTime, old, next);
+  };
+  input.onkeydown = event => { if (event.key === 'Enter') box.querySelector('.pick-add').click(); };
+  const reset = box.querySelector('.pick-reset');
+  if (reset) reset.onclick = async () => { closePicker(); await sendRelabel(startTime, endTime, old, '不明話者?'); };
+  input.focus();
+}
+function replaceSpeaker(old, next) { captions.querySelectorAll('.caption').forEach(row => { if (row.dataset.speaker === old) { row.dataset.speaker = next; const el = row.querySelector('.speaker'); el.textContent = next; el.className = `speaker ${next === '不明話者?' ? 'unknown' : ''} ${next === info.self_name ? 'self' : ''}`; el.style.color = next === '不明話者?' || next === info.self_name ? '' : color(next); bindSpeakerActions(row); } }); }
+const dispatches = new Map();
+function dispatchMarks(result) { const errors = result.errors || {}; const route = (symbol, name, value, enabled) => { const failed = errors[name]; const state = failed ? 'dispatch-fail' : value === null || value === undefined || !enabled ? 'dispatch-skip' : 'dispatch-ok'; return `<span class="dispatch-mark ${state}" title="${esc(failed || '')}">${symbol}</span>`; }; return `${route('📝', 'brief', result.brief_path, true)}${route('N', 'notion', result.notion, info.dispatch?.notion_tasks)}${route('#', 'slack', result.slack_ok, info.dispatch?.slack)}${route('▶', 'agent', result.agent, info.dispatch?.agent_repo)}`; }
+async function dispatchTodo(todoId) { const response = await fetch('/api/dispatch', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({todo_id:todoId})}); if (!response.ok) { console.warn('払い出しに失敗しました', await response.text()); return; } const result = await response.json(); dispatches.set(todoId, result); renderState(latestState); }
+function list(id, items, todo) { const target = document.querySelector(id); target.innerHTML = ''; (items || []).forEach(item => { const li = document.createElement('li'); const owner = item.owner || item.by || ''; const result = dispatches.get(item.id); li.className = `${closed.has(item.status) ? 'closed' : ''} ${todo && owner === info.self_name ? 'mine' : ''}`; li.innerHTML = `${esc(item.text)} ${owner ? `<span class="meta">(${esc(owner)})</span>` : ''} ${item.status && item.status !== 'open' ? `<span class="meta">${esc(item.status)}</span>` : ''}`; if (todo && item.status === 'open') { const button = document.createElement('button'); button.className = 'dispatch-button'; button.textContent = result ? '済' : '着手'; button.disabled = Boolean(result); button.onclick = () => dispatchTodo(item.id); li.append(button); if (result) li.insertAdjacentHTML('beforeend', dispatchMarks(result)); } target.append(li); }); if (!target.children.length) target.innerHTML = '<li class="meta">（なし）</li>'; }
+function topicClock(createdAt) { const elapsed = time(createdAt); const start = startedAt(); return start ? `${new Date(start + (Number(createdAt) || 0) * 1000).toLocaleTimeString('ja-JP', {hour12:false})}（${elapsed}）` : `—（${elapsed}）`; }
+function renderTopicFlow(state) { const target = document.querySelector('#topic-flow'); const asks = state.asks || []; const topics = [...(state.topics || [])].sort((left, right) => Number(right.created_at) - Number(left.created_at)); target.innerHTML = topics.map(topic => { const topicAsks = asks.filter(ask => ask.by === topic.id).sort((left, right) => Number(right.created_at) - Number(left.created_at)); const askLines = topicAsks.map(ask => { const status = ask.status === 'asked' ? ['asked', '聞いた'] : ask.status === 'skipped' ? ['skipped', 'スルー'] : topic.status === 'active' ? ['pending', '未'] : ['moved', '移動後 未']; const note = ask.note ? `<span class="meta ask-note">${esc(ask.note)}</span>` : ''; return `<li><div class="ask-line"><span class="ask-badge ${status[0]}" title="${status[1]}">${status[0] === 'asked' ? '✓' : ''}</span><span class="ask-body">${esc(ask.text)}${note}</span></div></li>`; }).join(''); return `<li class="topic-card ${topic.status === 'active' ? 'active' : ''}"><div class="topic-title ${topic.status === 'active' ? 'active' : ''}"><span class="meta">${esc(topicClock(topic.created_at))}</span> ${esc(topic.text)}</div>${askLines ? `<ul class="topic-asks">${askLines}</ul>` : ''}</li>`; }).join('') || '<li class="meta">（なし）</li>'; }
+function renderState(state) { latestState = state || {}; if (Object.keys(latestState).length) lastStateAt = Date.now() / 1000; renderTopicFlow(latestState); document.querySelector('#summary').textContent = latestState.summary || ''; list('#decisions', latestState.decisions); list('#todos', latestState.todos, true); list('#questions', latestState.questions); }
+async function restoreParticipant(name) { const rows = [...captions.querySelectorAll('.caption')].filter(row => row.dataset.speaker === name); for (const row of rows) await fetch('/api/relabel', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({start_time:Number(row.dataset.start), end_time:Number(row.dataset.end), old:name, new:'不明話者?'})}); }
+function renderParticipants(items) { (items || []).forEach(one => { if (one.name && one.name !== '不明話者?') knownSpeakers.add(one.name); }); const target = document.querySelector('#participants'); target.innerHTML = ''; (items || []).forEach(item => { const row = document.createElement('div'); row.className = 'participant'; const unknown = item.name === '不明話者?'; const detected = !item.enrolled && !unknown; row.innerHTML = `<span>${esc(item.name)}</span><span class="meta">（${item.enrolled ? '登録' : '検出'}・${item.utterances || 0}発話）</span>${unknown ? '' : '<button class="edit" title="表示名を変更">✎</button>'}${detected ? '<button class="edit restore" title="この名前の行を不明話者に戻す">戻す</button>' : ''}`; const edit = row.querySelector('.edit:not(.restore)'); const restore = row.querySelector('.restore'); if (edit) edit.onclick = () => renameSpeaker(item.name); else if (unknown) row.title = '行の ✎ で割り当て'; if (restore) restore.onclick = () => restoreParticipant(item.name); target.append(row); renderVoiceSuggestions(target, item); }); if (!target.children.length) target.textContent = '（検出待ち）'; }
+// この会議の相手 — 議事録・タスク・辞書の行き先。選ばなければ自社（自社）
+// 2026-09-15: ミナトの定例の議事録が 自社 の議事録DBに入った（会議ごとに選ぶ段が無かった）
+function renderClient(data) {
+  // クライアントの選択が使えない画面（リプレイ等）では、欄ごと出さない
+  if (!data || !Array.isArray(data.options)) { document.querySelector('#client-panel').hidden = true; return; }
+  const select = document.querySelector('#client'), note = document.querySelector('#client-note');
+  const chosen = data.chosen && data.chosen.name;
+  select.innerHTML = `<option value="">（未選択 → ${esc(data.default)}）</option>` + (data.options || []).map(option =>
+    `<option value="${esc(option.name)}" data-id="${esc(option.client_id)}"${option.name === chosen ? ' selected' : ''}>${esc(option.name)}${option.client_id ? `（${esc(option.client_id)}）` : ''}${option.test ? '（テスト）' : ''}</option>`).join('');
+  note.textContent = chosen ? `${data.chosen.how} で選択（${String(data.chosen.at || '').slice(11, 16)}）`
+    : data.ask ? '会議の相手を選んでください。選ばないと自社（自社）へ登録されます'
+    : `未選択のままだと ${data.default}（自社）へ登録されます`;
+  note.className = data.ask && !chosen ? 'warn' : 'meta';
+  document.querySelector('#client-panel').scrollIntoView(data.ask && !chosen ? {behavior: 'smooth', block: 'nearest'} : false);
+}
+document.querySelector('#client').onchange = async event => {
+  const option = event.target.selectedOptions[0];
+  if (!option.value) return;
+  const response = await fetch('/api/client', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name: option.value, client_id: option.dataset.id || ''})});
+  if (!response.ok) { document.querySelector('#client-note').textContent = '選べませんでした'; return; }
+  fetch('/api/client').then(response => response.json()).then(renderClient).catch(() => {});
+};
+fetch('/api/client').then(response => response.json()).then(renderClient).catch(() => {});
+
+// 辞書に足す — 会議中に気づいた誤変換を、その場で辞書へ（次の行から効く。ファイルは開かない）
+document.querySelector('#gl-add').onclick = async () => {
+  const wrong = document.querySelector('#gl-wrong').value.trim(), right = document.querySelector('#gl-right').value.trim();
+  const note = document.querySelector('#gl-note');
+  const response = await fetch('/api/library/dictionary/add', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({dictionary: 'current', wrong, right})});
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) { note.textContent = data.detail || '足せませんでした'; return; }
+  note.textContent = data.added ? `「${wrong}」→「${right}」を足しました（次の行から効きます）` : `「${wrong}」は辞書に既にあります`;
+  document.querySelector('#gl-wrong').value = ''; document.querySelector('#gl-right').value = '';
+};
+// 字幕の文字を選んだら、辞書に足す欄へ入れる（打ち直さなくていいように）
+document.addEventListener('mouseup', () => {
+  const selected = String(window.getSelection() || '').trim();
+  if (selected && selected.length <= 30 && window.getSelection().anchorNode?.parentElement?.closest('#captions')) {
+    document.querySelector('#gl-wrong').value = selected;
+  }
+});
+// 声の台帳 — 前の会議で覚えた人を「〇〇さん？」と出す。自動では付けない（会議をまたぐと本人と別人の声が近づく・実測）
+function renderVoiceSuggestions(target, item) {
+  if (!(item.suggestions || []).length) return;
+  const box = document.createElement('div'); box.className = 'meta voice-suggest';
+  box.innerHTML = '　声が近い人: ' + item.suggestions.map(s =>
+    `<button class="review-button voice-yes" data-name="${esc(s.name)}" title="前回: ${esc(s.last_session)}・類似度 ${esc(s.score)}">${esc(s.name)}？</button>` +
+    `<button class="edit voice-no" data-name="${esc(s.name)}" title="この人ではない">違う</button>`).join(' ');
+  box.querySelectorAll('button').forEach(button => {
+    button.onclick = () => fetch('/api/voice', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({speaker: item.name, name: button.dataset.name, accepted: button.classList.contains('voice-yes')})});
+  });
+  target.append(box);
+}
+// 要約の間隔は設定で変わる（既定 2 分）。画面に数字を直書きしない
+function nextUpdateLabel() { const sec = Number(info?.state_interval_sec) || 120;
+  return sec >= 60 ? `${Math.round(sec / 60)} 分` : `${Math.round(sec)} 秒`; }
+function renderModels(models) { const target = document.querySelector('#models'); const stt = models?.stt, summary = models?.summary, finalPass = models?.final_pass; const entries = []; if (stt) entries.push(`文字起こし: ${esc(stt.name)}（${esc(stt.where)}）`); if (summary) entries.push(`要約: ${esc(summary.name)}（${esc(summary.where)}）`); entries.push(finalPass ? `<span class="external">最終パス: ${esc(finalPass.name)}（外部（テキストのみ））</span>` : '最終パス: なし'); const verify = models?.verify; if (verify) { verifyEngine = verify; entries.push(verify.available ? `<span class="external">🔍 裏取り: ${esc(verify.name)}（${esc(verify.where)}）</span>` : `🔍 裏取り: なし（${esc(verify.where)}）`); document.querySelectorAll('.caption .verify').forEach(styleVerifyButton); } target.innerHTML = entries.join('／'); }
+function renderStatus(status) { info = {...info, ...status}; document.querySelector('#name').textContent = info.session_name || info.name || '会議'; if (status.models) renderModels(status.models); if (status.level) renderLevel(status.level); if (status.metrics) renderMetrics(status.metrics); if (status.status) renderStatusEvent(status.status); }
+function renderLevel(data) { const width = value => `${Math.max(0, Math.min(100, ((Number(value) || -80) + 80) * 1.25))}%`; document.querySelector('#self-level').style.width = width(data.self_dbfs); document.querySelector('#remote-level').style.width = width(data.remote_dbfs); }
+function renderMetrics(data) { document.querySelector('#metrics').textContent = `STT待ち ${data.stt_queue_depth ?? '—'} / p95 ${data.stt_latency_p95_sec ?? '—'}秒 / 状態 ${data.state_latency_sec ?? '—'}秒 / drift ${data.drift_sec ?? '—'}秒`; }
+function renderStatusEvent(data) { info.status = {...(info.status || {}), ...data};
+  // エンジン（手元 / 外）は起動のあとに決まる。知らせが来たらモデルの行を書き換える
+  if (data.models) renderModels(data.models);
+  // 終了を押したら経過を止める（押したあとも数字が進むと、まだ録れているように見える）
+  if (data.phase === 'stopping' || data.phase === 'finished') endedAt = endedAt || Date.now() / 1000;
+  if (data.phase === 'running') endedAt = 0; document.querySelector('#warning').textContent = (data.warnings || []).join(' / '); const replay = data.phase === 'replay'; document.querySelector('#self-meter').classList.toggle('disabled', replay); document.querySelector('#remote-meter').classList.toggle('disabled', replay); document.querySelector('#replay-note').textContent = replay ? 'リプレイ中は無効（字幕の時刻は再生開始からの換算）' : ''; if (data.note) document.querySelector('#warning').textContent = [data.note, document.querySelector('#warning').textContent].filter(Boolean).join(' / '); }
+function relabelSpeaker(startTime, old, next) { void old; captions.querySelectorAll('.caption').forEach(row => { if (row.dataset.start === String(startTime)) { row.dataset.speaker = next; const el = row.querySelector('.speaker'); el.textContent = next; el.className = `speaker ${next === '不明話者?' ? 'unknown' : ''} ${next === info.self_name ? 'self' : ''}`; el.style.color = next === '不明話者?' || next === info.self_name ? '' : color(next); bindSpeakerActions(row); } }); }
+// 事前資料 — 会議ごとに空から始め、その場で足す（共有フォルダの資料を使い回さない。2026-09-11 の事故）
+function renderPrep(data) {
+  if (!data || data.ok === false) { document.querySelector('#prep-panel').hidden = true; return; }
+  const list = document.querySelector('#prep-list'), files = data.files || [];
+  if (!files.length) { list.innerHTML = '<span class="meta">（なし — 付けなくても会議は回ります）</span>'; }
+  else {
+    list.innerHTML = files.map(file =>
+      `<div class="file"><span>${esc(file.name)}</span><span class="meta">${(file.chars || 0).toLocaleString()} 文字</span>` +
+      `<button class="edit" data-prep-remove="${esc(file.name)}" title="外す">✕</button></div>`).join('');
+    list.querySelectorAll('[data-prep-remove]').forEach(button => {
+      button.onclick = () => removePrep(button.dataset.prepRemove);
+    });
+  }
+  const note = document.querySelector('#prep-note');
+  const cut = !data.digested && data.chars > data.used_chars;
+  // 渡っているものを必ず出す。黙って切られると「付けたのに効かない」の理由が分からない
+  note.className = 'meta' + (cut ? ' warn' : '');
+  const what = data.digested
+    ? `長いので 1 回だけまとめて、そのまとめ（${data.used_chars.toLocaleString()} 文字）を会議中ずっと渡します（元 ${data.chars.toLocaleString()} 文字）。`
+    : cut ? `要約に渡るのは先頭 ${data.used_chars.toLocaleString()} 文字までです（全体 ${data.chars.toLocaleString()} 文字）。`
+          : `${data.used_chars.toLocaleString()} 文字を要約に渡しています。`;
+  note.textContent = files.length
+    ? what + (data.note ? ` ${data.note}。` : '') + ` 次の更新（${nextUpdateLabel()}以内）から効きます。すぐ効かせるなら「いま見直す」。`
+    : '';
+}
+async function postPrep(name, text) {
+  const response = await fetch('/api/prep', {method:'POST', headers:{'Content-Type':'application/json'},
+                                             body:JSON.stringify({name, text})});
+  const data = await response.json();
+  if (!response.ok) { const note = document.querySelector('#prep-note'); note.className = 'meta warn';
+                      note.textContent = `足せませんでした: ${data.detail || response.status}`; return; }
+  renderPrep(data);
+}
+async function removePrep(name) {
+  const response = await fetch('/api/prep/remove', {method:'POST', headers:{'Content-Type':'application/json'},
+                                                    body:JSON.stringify({name})});
+  if (response.ok) renderPrep(await response.json());
+}
+const TEXT_SUFFIXES = ['.md', '.txt', '.csv', '.json', '.vtt'];
+async function postPrepFile(name, buffer) {
+  // PDF・Word・Excel・PowerPoint はブラウザでは文字にできない。バイト列のまま手元へ送り、
+  //   本文の取り出しは手元でやる（外へは出さない）
+  const bytes = new Uint8Array(buffer); let binary = '';
+  for (let index = 0; index < bytes.length; index += 0x8000) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(index, index + 0x8000));
+  }
+  const response = await fetch('/api/prep/file', {method:'POST', headers:{'Content-Type':'application/json'},
+                                                  body:JSON.stringify({name, base64: btoa(binary)})});
+  const data = await response.json();
+  if (!response.ok) { const note = document.querySelector('#prep-note'); note.className = 'meta warn';
+                      note.textContent = `足せませんでした: ${data.detail || response.status}`; return; }
+  renderPrep(data);
+}
+function readFiles(files) {
+  [...files].forEach(file => {
+    const reader = new FileReader();
+    const isText = TEXT_SUFFIXES.some(suffix => file.name.toLowerCase().endsWith(suffix));
+    reader.onload = () => isText ? postPrep(file.name, String(reader.result || ''))
+                                 : postPrepFile(file.name, reader.result);
+    document.querySelector('#prep-note').textContent = `${file.name} を読み込んでいます…`;
+    isText ? reader.readAsText(file) : reader.readAsArrayBuffer(file);
+  });
+}
+document.querySelector('#prep-file').onchange = event => { readFiles(event.target.files); event.target.value = ''; };
+const drop = document.querySelector('#prep-drop');
+drop.addEventListener('dragover', event => { event.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', event => { event.preventDefault(); drop.classList.remove('over');
+                                         readFiles(event.dataTransfer.files); });
+document.querySelector('#prep-paste-add').onclick = () => {
+  const box = document.querySelector('#prep-paste'), text = box.value.trim();
+  if (!text) return;
+  const stamp = new Date().toTimeString().slice(0, 5).replace(':', '');
+  postPrep(`貼り付け-${stamp}.md`, text);
+  box.value = '';
+};
+fetch('/api/prep').then(response => response.json()).then(renderPrep).catch(() => {});
+
+// 裏取り — 気になった行を指して調べる（Claude CLI か Gemini＋Google 検索が調べて、実際のページを出典に返す）
+// 自動では動かさない。2026-09-12 の実測では自動検出の大半が社内の見積・案件の話だった
+// 手段は会議の承認のあとで決まる（Claude CLI／Gemini＋Google 検索／なし）。使えないときは押す前に理由を見せる
+let verifyEngine = null;
+function styleVerifyButton(button) {
+  if (!button) return;
+  const usable = !verifyEngine || verifyEngine.available;
+  button.style.opacity = usable ? '' : '0.35';
+  button.title = usable
+    ? `この行を Web で裏取りする（${verifyEngine ? verifyEngine.name : 'Claude CLI'} が検索して出典を出します）`
+    : `裏取りは使えません（${verifyEngine.where}）`;
+}
+function bindVerifyAction(row) {
+  const button = row.querySelector('.verify');
+  if (!button) return;
+  button.onclick = async () => {
+    button.disabled = true;
+    showVerdict(row, {phase: 'running'});
+    const response = await fetch('/api/verify', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({start_time: Number(row.dataset.start), text: row.children[2].textContent})});
+    const data = await response.json();
+    if (!response.ok || data.ok === false) {
+      showVerdict(row, {phase: 'done', verdict: '不明', note: data.detail || data.reason || '頼めませんでした', sources: []});
+      button.disabled = false;
+    }
+  };
+}
+function rowAt(startTime) {
+  return [...document.querySelectorAll('.caption')]
+    .find(row => Math.abs(Number(row.dataset.start) - Number(startTime)) < 0.05);
+}
+const verifyTimers = new Map();     // 行ごとの「調べています…」の時計
+function showVerdict(row, data) {
+  let box = row.querySelector('.verdict');
+  if (!box) { box = document.createElement('div'); box.className = 'verdict'; row.append(box); }
+  const key = row.dataset.start;
+  if (verifyTimers.has(key)) { clearInterval(verifyTimers.get(key)); verifyTimers.delete(key); }
+  if (data.phase === 'running') {
+    // 経過を出す。2026-09-14 の会議で「調べています…」のまま何も起きず、
+    //   動いているのか死んだのかが分からなかった。時間切れならそう言う
+    box.className = 'verdict';
+    const limit = Number(data.timeout_sec) || 120, started = Date.now();
+    const tick = () => {
+      const seconds = Math.floor((Date.now() - started) / 1000);
+      if (seconds > limit + 15) {
+        clearInterval(verifyTimers.get(key)); verifyTimers.delete(key);
+        box.className = 'verdict 要確認';
+        box.textContent = `返事がありません（${limit} 秒で切りました）。もう一度 🔍 を押すと調べ直します`;
+        const button = row.querySelector('.verify'); if (button) button.disabled = false;
+        return;
+      }
+      box.textContent = `調べています… ${seconds} 秒（${data.engine || 'Claude CLI'} が検索します。ふつう 20〜30 秒）`;
+    };
+    tick();
+    verifyTimers.set(key, setInterval(tick, 1000));
+    return;
+  }
+  const sources = (data.sources || []).map(url => `<a href="${esc(url)}" target="_blank" rel="noreferrer">${esc(url)}</a>`).join('<br>');
+  box.className = `verdict ${esc(data.verdict || '不明')}`;
+  box.innerHTML = `<b>${esc(data.verdict || '不明')}</b>${esc(data.note || '')}` +
+    (sources ? `<br>出典: ${sources}` : '<br><span class="meta">出典なし（開けたページがありません）</span>') +
+    (data.seconds ? `<span class="meta"> ／ ${esc(data.seconds)} 秒</span>` : '');
+  const button = row.querySelector('.verify');
+  if (button) button.disabled = false;
+}
+function renderVerify(data) {
+  const row = rowAt(data.start_time);
+  if (row) showVerdict(row, data);
+}
+
+function renderExternal(data) {
+  const panel = document.querySelector('#external'), body = document.querySelector('#ex-body');
+  if (data.phase === 'done') { panel.hidden = true; return; }
+  // 会議中（30 秒刻み）と会議のあと（録音を丸ごと）で文面を分ける。どちらも毎回ここで聞く
+  const what = data.live
+    ? '送るもの: ' + (data.files || []).join('、') + '（会議のあいだ続きます）／送り先: ' + (data.project || '')
+    : '送るもの: ' + (data.files || []).join('、') + '（約 ' + (data.minutes || 0) + ' 分）／送り先: ' + (data.project || '');
+  const fallback = data.live
+    ? '出さない場合は手元（Whisper）で文字起こしします（画面に出るのが遅くなります）。'
+    : '出さない場合は手元で作ります（少し時間がかかるだけです）。';
+  body.innerHTML = '<div class="files">' + esc(what) + '</div>' +
+    '<div class="warn">中身はこの会議の会話そのものです。' + fallback + '</div>' +
+    '<div class="files">' + Math.round(data.timeout_sec || 0) + ' 秒で手元に倒れます。</div>';
+  document.querySelector('#ex-actions').hidden = false;
+  panel.hidden = false;
+}
+async function answerExternal(decision) {
+  document.querySelector('#ex-actions').hidden = true;
+  await fetch('/api/external-send', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({decision})});
+}
+document.querySelector('#ex-send').onclick = () => answerExternal('send');
+document.querySelector('#ex-keep').onclick = () => answerExternal('keep');
+// 会議のあとの仕上げ（押してから走らせる）。このパネルが無く、端末だけが聞いていた（2026-09-17 運用者 指摘）
+let finishTimer = 0;
+function renderFinish(data) {
+  const panel = document.querySelector('#finish-ask'), body = document.querySelector('#fa-body');
+  if (!data.ask) { clearInterval(finishTimer); panel.hidden = true; return; }
+  const steps = (data.steps || []).map(step => `${esc(step.label)}（${esc(step.minutes)}）`).join('／');
+  const saved = (data.saved || []).join('／');
+  body.innerHTML = (saved ? '<div class="files">ここまでは残りました: ' + esc(saved) + '</div>' : '') +
+    '<div class="files">このあとの仕上げ: ' + steps + '</div>' +
+    '<div class="files" id="fa-left"></div>' +
+    '<div class="meta">「あとでやる」を選んでも録音と全文は残ります。' +
+    '会議アシスタントの一覧から、あとで「仕上げる」を押せます。</div>';
+  document.querySelector('#fa-actions').hidden = false;
+  panel.hidden = false;
+  const limit = Number(data.timeout_sec) || 600, started = Date.now();
+  clearInterval(finishTimer);
+  finishTimer = setInterval(() => {
+    const left = Math.max(0, Math.round(limit - (Date.now() - started) / 1000));
+    const box = document.querySelector('#fa-left');
+    if (box) box.textContent = `${left} 秒で「あとでやる」に倒します。`;
+    if (left <= 0) { clearInterval(finishTimer); panel.hidden = true; }
+  }, 1000);
+}
+async function answerFinish(choice) {
+  document.querySelector('#fa-actions').hidden = true;
+  clearInterval(finishTimer);
+  await fetch('/api/finish-now', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({choice})});
+  document.querySelector('#fa-body').innerHTML = choice === 'now'
+    ? '<div class="files">仕上げを始めました。進み具合はターミナルに出ます。</div>'
+    : '<div class="files">後回しにしました。会議アシスタントの一覧から、あとで「仕上げる」を押せます。</div>';
+}
+document.querySelector('#fa-now').onclick = () => answerFinish('now');
+document.querySelector('#fa-later').onclick = () => answerFinish('later');
+function handle(event) { const data = event.data || {}; if (event.type === 'segment') renderCaption(data); if (event.type === 'amend') amendCaption(data); if (event.type === 'state') renderState(data.state || data); if (event.type === 'level') renderLevel(data); if (event.type === 'metrics') renderMetrics(data); if (event.type === 'status') renderStatusEvent(data); if (event.type === 'preflight') renderPreflight(data); if (event.type === 'external_send') renderExternal(data); if (event.type === 'finish') renderFinish(data); if (event.type === 'prep') renderPrep(data); if (event.type === 'client') renderClient(data); if (event.type === 'verify') renderVerify(data); if (event.type === 'participants') renderParticipants(data.items); if (event.type === 'rename') { renames[data.old] = data.new; delete renames[data.new]; replaceSpeaker(data.old, data.new); } if (event.type === 'relabel') relabelSpeaker(data.start_time, data.old, data.new); if (event.type === 'dissolve') replaceSpeaker(data.name, '不明話者?'); if (event.type === 'dispatch') { dispatches.set(data.todo_id, data); renderState(latestState); } }
+// 起動セルフチェック（ターミナルを見なくて済むように、測定の進行と判断を画面に出す）
+// 測定はボタンを押してから始める（自動で始めると身構える前に 3 秒が終わる。2026-09-12 運用者 指摘）
+function renderPreflight(data) {
+  const panel = document.querySelector('#preflight'), body = document.querySelector('#pf-body');
+  const measure = document.querySelector('#pf-measure'), actions = document.querySelector('#pf-actions');
+  const lines = [];
+  if (data.mic) lines.push(`自分のマイク: ${esc(data.mic)}`);
+  if (data.remote) lines.push(`相手側の取得: ${esc(data.remote)}`);
+  if (data.mic_dbfs !== null && data.mic_dbfs !== undefined && data.phase !== 'mic') lines.push(`マイクの音量: ${esc(data.mic_dbfs)} dBFS`);
+  if (data.remote_dbfs !== null && data.remote_dbfs !== undefined) lines.push(`相手側の音量: ${esc(data.remote_dbfs)} dBFS`);
+  if (data.phase === 'wait_mic') lines.push(`<span class="speak">準備ができたら「測る」を押して、${esc(data.seconds)} 秒ほど話してください</span>`);
+  if (data.phase === 'wait_remote') lines.push(`<span class="speak">相手が話している状態で「測る」を押してください（${esc(data.seconds)} 秒）。まだのときは「飛ばす」</span>`);
+  if (data.phase === 'mic') lines.push('<span class="speak">測定中… 話してください</span>');
+  if (data.phase === 'remote') lines.push('<span class="speak">測定中… 相手の声を待っています</span>');
+  (data.warnings || []).forEach(w => lines.push(`<span class="warn">⚠ ${esc(w)}</span>`));
+  if (data.phase === 'ok') lines.push('✅ 問題は見つかりませんでした。会議を始めます。');
+  body.innerHTML = lines.join('<br>');
+  measure.hidden = !(data.phase === 'wait_mic' || data.phase === 'wait_remote');
+  actions.hidden = data.phase !== 'ask';
+  [...measure.children, ...actions.children].forEach(button => { button.disabled = false; });
+  panel.hidden = false;
+  if (data.phase === 'ok') setTimeout(() => { panel.hidden = true; }, 4000);
+}
+async function answerPreflight(decision) {
+  document.querySelectorAll('#pf-measure button, #pf-actions button').forEach(button => { button.disabled = true; });
+  await fetch('/api/preflight', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({decision})});
+  if (decision === 'cancel') { document.querySelector('#pf-body').innerHTML += '<br>中止しました。ターミナルの表示を確認してください。'; document.querySelector('#pf-measure').hidden = true; document.querySelector('#pf-actions').hidden = true; }
+}
+document.querySelector('#pf-go').onclick = () => answerPreflight('measure');
+document.querySelector('#pf-skip').onclick = () => answerPreflight('skip');
+document.querySelector('#pf-now').onclick = () => answerPreflight('start_now');
+document.querySelector('#pf-stop').onclick = () => answerPreflight('cancel');
+document.querySelector('#pf-start').onclick = () => answerPreflight('start');
+document.querySelector('#pf-retry').onclick = () => answerPreflight('retry');
+document.querySelector('#pf-cancel').onclick = () => answerPreflight('cancel');
+// 会議の途中で全文を Claude に読み直させる（数分にまたがる合意は 30〜60 秒の窓では拾えないため）
+async function runReview(reason) { const button = document.querySelector('#review'); button.disabled = true; document.querySelector('#review-note').textContent = '見直し中…'; try { const response = await fetch('/api/review', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({reason})}); const result = await response.json(); document.querySelector('#review-note').textContent = result.ok ? `見直し完了（決定 ${result.decisions} 件 / TODO ${result.todos} 件・${result.seconds}秒）` : `見直しできません: ${result.reason || ''}`; } catch (error) { document.querySelector('#review-note').textContent = `見直しに失敗: ${error}`; } finally { button.disabled = false; } }
+document.querySelector('#review').onclick = () => runReview('手動');
+// 「15:30」（終了時刻）でも「60」（分）でも受ける
+function planMinutes(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return 0;
+  const clock = text.match(/^(\d{1,2})[:：](\d{2})$/);
+  if (clock) {
+    const end = new Date();
+    end.setHours(Number(clock[1]), Number(clock[2]), 0, 0);
+    if (end <= new Date()) end.setDate(end.getDate() + 1);   // 日付をまたぐ会議
+    return Math.max(1, Math.round((end - new Date()) / 60000));
+  }
+  return Number(text) || 0;
+}
+async function savePlan() { const minutes = planMinutes(document.querySelector('#plan').value); const response = await fetch('/api/plan', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({minutes})}); if (!response.ok) { document.querySelector('#review-note').textContent = '終了予定を読めません（例: 15:30 か 60）'; return; } const plan = await response.json(); renderPlan(plan); }
+function renderPlan(plan) { const note = document.querySelector('#review-note'); if (!plan || !plan.at) { if (!plan?.planned_minutes) note.textContent = ''; return; } const at = new Date(plan.at * 1000).toLocaleTimeString('ja-JP', {hour12:false, hour:'2-digit', minute:'2-digit'}); note.textContent = `${at} に自動で見直します（終了 ${plan.lead_min} 分前）`; }
+document.querySelector('#plan').onchange = savePlan;
+// 会議を終える（ターミナルの Ctrl+C の代わり）。終了後に録音からの作り直しが走る
+document.querySelector('#finish').onclick = async () => { const button = document.querySelector('#finish'); if (!confirm('会議の記録を終了します。このあと録音から全文を作り直します（数分）。よろしいですか？')) return; button.disabled = true; const response = await fetch('/api/finish', {method:'POST'}); const result = await response.json(); document.querySelector('#review-note').textContent = result.ok ? '終了処理に入りました。ターミナルの進行を見てください' : `終了できません: ${result.reason || ''}`; button.disabled = !result.ok; };
+fetch('/api/plan').then(response => response.json()).then(plan => { if (plan.planned_minutes) document.querySelector('#plan').value = String(plan.planned_minutes); renderPlan(plan); }).catch(() => {});
+captions.onmouseenter = () => { hovering = true; }; captions.onmouseleave = () => { hovering = false; };
+let endedAt = 0;   // 会議を終えた時刻（0 なら進行中）
+// 1 秒ごとの時計。読み込み直後にも 1 回呼ぶ（呼ばないと最初の 1 秒は「--:--:--」のまま）
+function tickClock() { const start = Date.parse(info.started_at) / 1000 || Number(info.started_at) || 0; const now = endedAt || Date.now() / 1000; const elapsed = info.status?.phase === 'replay' ? latestSegmentEnd : Math.max(0, now - start); document.querySelector('#elapsed').textContent = `${Math.floor(elapsed / 60)}:${String(Math.floor(elapsed % 60)).padStart(2, '0')}${endedAt ? '（終了）' : ''}`; document.querySelector('#clock').textContent = new Date().toLocaleTimeString('ja-JP', {hour12:false}); // 終了したら「状態更新」も止める（経過だけ止めて、こちらを止め忘れていた。2026-09-14）
+document.querySelector('#age').textContent = lastStateAt ? `${Math.max(0, Math.floor(now - lastStateAt))}秒前${endedAt ? '（終了）' : ''}` : (endedAt ? '—' : `未更新（${nextUpdateLabel()}ごとに更新されます）`); }
+setInterval(tickClock, 1000);
+// 履歴の再生は /api/status（started_at）が届いてから開く。先に開くと履歴の行が started_at 無しで描かれ、実時刻が 1970 年（9:00:49）になる（aa 実測 2026-09-09）。
+function openEvents() { const source = new EventSource('/events'); source.onmessage = message => { try { handle(JSON.parse(message.data)); } catch (error) { console.warn('イベントを読めません', error); } }; }
+Promise.all([fetch('/api/state').then(r => r.json()), fetch('/api/status').then(r => r.json()), fetch('/api/participants').then(r => r.json())]).then(([state, status, participants]) => { renderStatus(status); tickClock(); renderState(state); renderParticipants(participants); }).catch(error => console.warn('初期状態を読めません', error)).finally(openEvents);
+</script>
+</body>
+</html>

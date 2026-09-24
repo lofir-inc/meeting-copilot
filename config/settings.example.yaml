@@ -1,0 +1,304 @@
+# ==============================================================
+# mode: 動作モードの切り替え
+#   interview_stereo … 対面インタビュー（1系統ステレオの L/R で物理分離）※既定・従来どおり
+#   meeting_loopback … Zoom会議（自分のマイク + BlackHole ループバックの2系統）
+# ==============================================================
+mode: interview_stereo
+
+audio:
+  sample_rate: 48000
+  channels: 2
+  dtype: float32
+  chunk_duration_sec: 0.1      # コールバック1回あたりのフレーム長
+
+  # 対面モード（interview_stereo）の入力。番号ではなく**名前**で、使う順に並べる。
+  #   引ければ起動時に device を上書きする。引けなければ下の device をそのまま使う。
+  device_candidates:
+    - Wireless microphone
+
+  device: 1                     # フォールバック。番号は接続機器で毎回ずれるので当てにしない
+
+vad:
+  silence_threshold_db: -72    # 無音判定の閾値 (dBFS) — Wireless Mic USB のゲインが低いため
+  silence_duration_sec: 0.8    # 短めの間でも切り出し（話者交代を検知）
+  min_chunk_sec: 0.5           # 短い発話も拾う
+  max_chunk_sec: 10            # 最大10秒で強制切り出し（話者混在を防ぐ）
+
+stt:
+  # 会議中の文字起こしをどこで回すか（2026-09-13 運用者 決定＝方式④「準リアルタイム・バッチ」）。
+  #   local  … 手元の mlx-whisper。オフラインでも動く。GPU を Ollama と取り合う（要約が 3 倍遅くなる）
+  #   gemini … 30 秒ごとに外へ投げる。画面に出るまで約 28 秒（いまの 17 分遅れから 36 倍改善）、
+  #            取りこぼし 0.5%（手元は 6.4%）、GPU を使うのは Ollama だけになる。月 ¥759〜1,600
+  #   gemini にしても、meeting.external_stt.enabled が false なら手元で起こす。
+  #     会議ごとの承認（画面で聞く）も別に要る。どちらも通らなければ黙って手元へ落ちる。
+  #   詳しくは PLAN-stt-selection.md の §6 ④。
+  engine: local    # local | gemini | deepgram。配布版の既定は手元
+  model: mlx-community/whisper-large-v3-turbo
+  language: ja
+  beam_size: 1                  # mlx-whisper は beam search 未実装のため greedy
+
+llm:
+  # 会議中の要約・状態更新をどこで回すか（2026-09-13 運用者 決定「ローカルと Gemini の両方を残す。既定は Gemini」）。
+  #   local  … 手元の Ollama（gemma4）。オフラインでも動く。モデル 9.6GB と強い GPU が要る
+  #   gemini … 外で回す。送るのは**文字だけ**（音声は送らない）。決定事項の拾いが 29 件 対 2 件
+  #            （同じ入力・2026-09-13 実測）。速さは理由ではない（単体ならローカルも 3.5 秒）
+  #   gemini にしても、meeting.external_stt.enabled が false／会議ごとの承認が取れなければ手元で回す。
+  #     会議中の音声（stt.engine）と合わせて、画面で 1 回だけ聞かれる。
+  engine: local    # local | gemini。配布版の既定は手元
+  base_url: http://localhost:11434
+  model: gemma4
+  temperature: 0.3
+  max_tokens: 4096
+  timeout_sec: 120
+  final_pass: none    # none | claude_cli。議事録を作るなら none のままでよい（全文を二度読まない）
+
+  # 会議中の要約・状態更新を外で回すときの設定（`--llm gemini` で使う。既定はローカル Ollama）。
+  # もともとローカルにしていたのは費用ではなく機密性のため（system-outline.md）。
+  #   音声を外へ出す構成にした時点でその前提は崩れているので、マシンスペック依存を下げる側に倒せる。
+  gemini:
+    model: gemini-3.8-flash
+    key_file: ~/.config/meeting-copilot/gemini.key
+    temperature: 0.3
+    thinking_budget: 0          # 思考は切る。要約に推論は要らないのに出力費用が跳ねる
+
+# ---------------------------------------------------------------
+# タスク管理 と会議中 TODO の払い出し。外部への書き込みは「着手」または Ctrl+C のときだけ。
+# ---------------------------------------------------------------
+task_hub:
+  client_name: 自社
+  chat_notify_url: ""    # 社内のチャット通知の口。配布版では使わない
+  slack: false    # 社内のチャット通知。配布版では使わない
+  notion_tasks: false    # 社内のタスク管理への登録。配布版では使わない
+  people_master_db: ""    # 名簿の置き場（つなぐ場合だけ。SETUP.md 10）
+                                # 哲学カードの行き先は、連携先と同じ 2 段で決める
+                                #   （2026-09-17 に 議事録の連鎖 / 哲学カードの抽出 を読んで合わせた）:
+                                #     話者ラベル → People Master の `Speaker Labels`（multi_select）で人を引く
+                                #                → Persona Master を `People Master`（relation）で引く（複数可）
+                                #   自社の人かどうかも People Master の `Is Internal` で決まる。
+                                #   1 人に複数のペルソナが付くときは、1 枚のカードの Persona に全員を入れる
+  personas:                     # 上書きと逃げ道（People Master にラベルが無い人・急ぐとき）。
+                                #   画面「会議アシスタント」→「声の台帳」から直せる。
+                                #   複数のときは `自分: [自社社長, 自社開発者]`
+                                #   空のままの人は登録しない（違う人のカードにしないため）
+  dictionary_sync: false    # 社内の辞書 DB とつなぐ。配布版では使わない
+                                #   辞書の候補から選んだ対を タスク管理 へ Status=候補 で足す（自動適用されない）
+
+dispatch:
+  enabled: true
+  context_sec: 90
+  agent_repo: ~/your-workspace
+  on_finish: minutes    # minutes | none。会議の終わりに議事録（minutes.md）まで作る
+
+# 会議のあとの議事録（on_finish: minutes のとき・scripts/make_minutes.py）
+# 使える手段を上から選び、駄目なら次へ落ちる。最後は必ず「貼り付け用の指示書」で止まる
+#   ① claude_cli（Claude のサブスク・従量なし）→ ② gemini（その会議で外への送信を承認したときだけ）
+#   → ③ local（Ollama・オフライン）→ ④ none（minutes_prompt.md を好きな AI チャットに貼る）
+minutes:
+  engine: auto                  # auto | claude_cli | gemini | local | none
+  local_chunk_chars: 12000      # 手元の LLM に 1 回で渡す全文の長さ（超えたら分けて要点を取り、最後にまとめる）
+  timeout_sec: 600
+
+diarizer:
+  similarity_threshold: 0.75   # 音声正規化追加後はデフォルトで十分
+
+orchestrator:
+  summary_interval_sec: 180    # 3分
+
+output:
+  workspace_dir: ./workspace
+  save_audio_chunks: false
+
+# ---------------------------------------------------------------
+# ローカル Web UI。meeting_loopback の実行時だけ起動される。
+# ---------------------------------------------------------------
+ui:
+  enabled: true
+  host: 127.0.0.1
+  port: 8765
+  open_browser: true
+
+# ---------------------------------------------------------------
+# meeting_loopback モード専用。interview_stereo では読まれない。
+# ---------------------------------------------------------------
+meeting:
+  self_name: 自社自分          # 自分の発話に付ける固定ラベル（マイクを分けているので判定しない）
+  capture_backend: screencapturekit  # screencapturekit（既定）| blackhole（フォールバック）
+  sck:
+    channels: 1                 # ScreenCaptureKit はモノラルで取得する
+    exclude_current_process: true  # 自己診断ビープを含む自プロセス音声を除外する
+  beep_selftest: true           # 起動時にビープを鳴らしてシステム音声を自己診断する
+
+  finalize_after: true          # 終了後、録音から全文を起こし直して議事録の材料を作り直す
+                                # 2026-09-14 実測（65 分の会議）: 終了 → 完了まで 2 分 48 秒
+                                #   （最終パス 67 秒＋作り直し 101 秒）。方式④なら送り直さないので費用ゼロ。
+  wait_for_apps: []             # 作り直しの前に処理が落ち着くのを待つアプリ（空なら待たない）
+                                # 2026-09-15 運用者 決定: 自社主催の Zoom では MacWhisper を常駐させない（Zoom 録音が
+                                #   バックアップ）ので待つ相手を外した。常駐させる人は [MacWhisper] に戻す
+  wait_cpu_percent: 20          # CPU 合計がこれを下回れば「落ち着いた」
+  wait_timeout_sec: 1800        # 待つ上限。超えたら待たずに始める
+  # （MacWhisper を常駐させる場合の注意）会議後に自動で文字起こしを始め、止める設定が無い（2026-09-12 確認）。
+  #   2026-09-11 は取り合いで GPU リセットが 2 回起きた。09-13 の切り分けでは食い合いの主因は自分の Whisper と
+  #   Ollama で、MacWhisper の寄与は 0.8 秒分。09-15 は MacWhisper 自体が会議終了 3 秒後に落ちてデータを失った。
+  open_folder_after: true       # 終了後にセッションのフォルダを Finder で開く
+  finish_mode: ask              # 会議のあとの仕上げ。ask=画面で聞く（既定）／auto=すぐ走らせる／later=いつも後回し
+  finish_wait_sec: 600          # 画面の返事を待つ秒数。超えたら「あとでやる」に倒す
+  keep_backlog_sec: 180         # 本編前の直近何秒を文字起こしに残すか（挨拶で話者に名前を付けるため）
+  silence_alert_sec: 120        # 本編に入ってからこの秒数音が来なければ画面で警告（0 で無効）
+  review_lead_min: 10           # 画面で終了予定を入れたとき、終了の何分前に全文を見直すか
+  glossary_path: config/glossary.yaml  # 認識後に置き換える用語辞書（Whisper のヒントには使わない）
+
+  # 事前資料は会議ごとに空から始める（2026-09-14 運用者 依頼）。要るものは画面の「事前資料」から
+  #   足す（ファイル選択・ドラッグ＆ドロップ・貼り付け。会議の途中でも足せる）。
+  #   false にすると、従来どおり workspace/prep/ の中身をコピーする。
+  #   共有フォルダを使い回していたせいで、09-11 の定例が 4 月の別会議の計画を評価基準にしていた。
+  prep_reset: true
+
+  # ---------------------------------------------------------------
+  # 会議のあとの作り直しを、外（Gemini）の文字起こしで行うか。既定は off。
+  #   on にしても送らない — 実行のたびに画面で会議ごとの承認を取る（運用者 決定 2026-09-13）。
+  #   承認が取れない・オフライン・課金を確認できないときは、手元の Whisper へそのまま落ちる。
+  #   話者の割り当ては外に任せない（Gemini 76% 対 手元 97%）。詳しくは PLAN-external-stt.md。
+  # ---------------------------------------------------------------
+  external_stt:
+    provider: deepgram          # gemini | deepgram
+    deepgram_key_file: ~/.config/meeting-copilot/deepgram.key
+    deepgram_model: nova-3
+    enabled: false    # 外（Deepgram / Gemini）へ音声を出すか。SETUP.md 7〜8 を読んでから true に
+    billing_project: ""    # ← 自分の GCP プロジェクト ID（外で回すときだけ）
+                                #   XXXXXX-XXXXXX-XXXXXX。他の用途に相乗りさせない＝請求を分けるため
+    model: gemini-3.5-transcribe
+    key_file: ~/.config/meeting-copilot/gemini.key   # 1 行目だけ読む。中身は表示しない
+                                #   generativelanguage.googleapis.com 専用に制限したキー
+    glossary_path: config/glossary-gemini.yaml  # Whisper 用の辞書は外のエンジンにほぼ効かない
+    timeout_sec: 900
+    ask_timeout_sec: 120        # 画面の確認を待つ秒数。超えたら送らない（作り直しは無人で走る）
+    # 会議**中**に送るときの刻み方（`stt.engine: gemini` のときだけ使う）。
+    # 切れ目は必ず VAD の無音に置き、無音は送らない（語の途中で切らない・無音混じりを投げない）。
+    live:
+      window_sec: auto          # これだけ溜まったら送る。auto＝エンジンに合わせる
+                                #   （Deepgram 8 秒 → 画面まで約 9.5 秒／Gemini 30 秒 → 約 43 秒）
+                                #   2026-09-18 実測: Deepgram は 8 秒でも 30 秒と同じ精度（39.8%）。
+                                #     5 秒から崩れる（43.2%）。数字を入れれば手で決められる
+      first_window_sec: auto    # 最初の窓だけ短く（録れているか早く分かるように）。auto＝エンジンに合わせる
+      idle_flush_sec: 45        # 音が途切れたまま溜まっているぶんを、壁時計でここまで待って送る
+      max_speech_sec: 120       # 1 回に送る音声（無音を除く）の上限。長い独話で窓が膨らむのを止める
+      max_workers: 2            # 同時に送る数（自分・相手の 2 系統）。制限は 10 リクエスト/分
+      retries: 1                # 失敗したら 1 回だけ送り直す
+                                # それでも駄目なら external_gaps.jsonl に残し、会議のあとに拾い直す
+
+  # ---------------------------------------------------------------
+  # 画面共有の取り込み（何のページの話だったかを、あとから辿れるように）。既定は off。
+  #   相手が共有している画面は、そのまま資料そのもの。手元に残すかは使う人が決める。
+  #   on にすると: 会議アプリのウィンドウだけを interval_sec ごとに 1 枚撮り、前の 1 枚と
+  #   見た目が変わったときだけ screens/ に残す。文字は macOS の Vision で手元だけで読み、
+  #   URL とページ名を screens.jsonl に控える。画面全体は撮らない。外へは何も送らない。
+  #   （画面収録の許可は会議の音声取り込みと同じものを使う）
+  # ---------------------------------------------------------------
+  screen_capture:
+    enabled: false    # 相手の画面を控えるか。相手の資料が手元に残る（SECURITY.md 4）
+    owners: [zoom.us, Zoom, Google Chrome, Comet]  # 取り込む対象のアプリ（この 4 つ以外は撮らない）
+    titles: [Zoom, ミーティング, Google Meet, "Meet - ", "Meet – ", Microsoft Teams, Webex]
+                                # ブラウザは、この目印がタイトルに無ければ撮らない（Zoom アプリは目印なしでも撮る）
+                                #   会議を聞きながらの調べ物・資料のタブを撮らないための線引き
+    exclude_titles: [会議アシスタント, 会議ダッシュボード, 127.0.0.1, localhost]
+                                # 自分の画面を撮り返さない（クライアント名や過去の会議が出ているため）
+    interval_sec: 6             # 何秒ごとに見るか
+    change_threshold: 0.02      # 前の 1 枚と違う画素がこの割合を超えたら残す（0〜1）
+                                #   実測（2026-09-16・1600x900）: 同じページ 0.000 / 別ページ 0.027
+    max_shots: 400              # 1 会議で残す上限（相手のカメラが大きく映ると毎回変わるため頭打ちにする）
+    ocr: true                   # 文字を読む（手元の Vision・別プロセス。false なら画像だけ残す）
+
+  aizuchi_mark: true            # 相づちだけの行に印を付ける（落とさず残す。運用者 決定 2026-09-13）
+  min_avg_logprob: -1.0         # Whisper の自信がこれ未満の出力は捨てる（物音の幻聴対策）
+
+  voice_library:                # 声の台帳（前の会議で名前を付けた人を、次の会議の「不明話者」に候補として出す）
+    enabled: false    # 声紋は個人を識別できる情報。使うなら SECURITY.md を読んでから true に
+    path: workspace/voices/library.json
+    suggest_floor: 0.80         # これ未満の人は候補に出さない。自動では名前を付けない（押して付ける）
+                                #   実測（2026-09-14）: 会議をまたぐと 本人 0.85〜0.92 / 別人 〜0.85 で重なる
+                                #   押した／断ったは voice_matches.jsonl に溜まる → scripts/voice_library.py matches
+
+  verify_engine: auto           # 🔍（画面で行を指して裏取り）の手段。auto | claude_cli | gemini | none
+                                # auto = Claude CLI（サブスク）→ Gemini＋Google 検索（その会議で外への送信を
+                                #   承認したときだけ）→ なし。送るのは押した行と前後の文字だけ（音声は出ない）
+
+  factcheck:                    # 裏取りの価値がある発言を拾って一次判定する（Phase 7）
+    enabled: false              # 本番への配線はこれから。まず scripts/factcheck_transcript.py で質を見る
+    interval_sec: 60            # 何秒ぶんをまとめて見るか
+    verify: local               # local（ローカルの知識だけ）| off（拾うだけ）
+
+  summary_mode: rolling         # rolling（状態差分）| legacy（従来の3分要約）
+  state:                        # rolling 時の状態更新設定
+    interval_sec: 120           # 状態更新の間隔（秒）。2026-09-18 に 30 → 120（運用者 判断）
+                                #   実測（30.2 分の会議）: 53 回中 31 回（58%）は何も変わらなかった。
+                                #   1 回 930 字のうち 759 字（82%）は状態と指示の再送＝重複。
+                                #   延ばしても要約の中身は減らない。送る量は 42%、変化は
+                                #   1 回あたり平均 2.3 件（30 分で 34 件）。3 分だと後半を拾い損ねる
+    window_max_sec: 120         # 遅延時に分割するウィンドウの最大幅（秒）
+    max_prompt_chars: 12000     # LLM に渡すプロンプトの文字数上限
+    num_ctx: 8192               # Ollama のコンテキスト長
+    num_predict: 700            # gemma4 は思考トークンを出すので出力を減らす
+    think: false                # gemma4 の思考トークンを切る
+    max_attempts: 3             # JSON 応答失敗時の最大試行回数
+    prior_tasks_chars: 2000     # 事前資料のうち、毎回の窓のプロンプトへ入れる文字数
+                                # これを超える資料は、足したときに 1 回だけ「まとめ」を作り、
+                                #   以後はまとめだけを載せる（実測: 提案書 PDF は 102,207 文字。
+                                #   全文を毎窓に載せると 30 秒ごとに課金され、手元の文脈にも入らない）
+
+  vad:                          # 会議モードだけに適用する VAD の上書き
+    backend: silero             # Silero VAD を使う
+    speech_threshold: 0.5       # 発話とみなす確率の閾値
+    silence_duration_sec: 0.5   # この秒数の無音で発話を切る
+    min_chunk_sec: 0.4          # これより短いチャンクは捨てる
+    max_chunk_sec: 10           # 1 チャンクの最大長
+    pre_roll_sec: 0.2           # 発話開始直前に含める秒数
+
+  turn_split:                   # チャンク内の話者交代を分ける設定
+    enabled: true               # 部分 embedding によるターン分割を有効化
+    rate: 2.5                   # 部分 embedding の取得頻度
+    min_turn_sec: 0.8           # これより短いターンは隣へ吸収
+
+  diarizer:                     # 会議モードだけに適用する話者照合設定
+    similarity_threshold: 0.75  # 登録話者と判定する類似度の閾値
+    min_unknown_sec: 6.0        # 不明話者を起こすまでに溜める発話秒数
+    min_unknown_utterances: 2   # 不明話者を起こすまでに必要な発話数
+    merge_threshold: 0.75       # 不明話者クラスタを併合する類似度の閾値（断片の吸収用）
+    merge_threshold_substantive: 0.90  # どちらも中身のある人どうしを併合するのに要る類似度
+    merge_min_utterances: 3     # 併合の判断を始めるまでに両方に要る発話数
+    # 上の 2 つは 2026-09-11 の会議で決めた。0.75 だけだと、昇格直後（まだ 1 発話）に相手 2 人が
+    #   1 つのクラスタになり、話者の一致が 68% に落ちた。この 2 つを入れて 94%（自分側込みで 97%）。
+    adapt_margin: 0.10          # adaptation に必要な 1 位と 2 位の差
+    enroll_weight: 0.5          # centroid で登録音声を保つ重み
+    enroll_warn_similarity: 0.80  # 登録時に声紋の近さを警告する閾値
+
+  # 自分のマイクは日によって変わる。番号ではなく**名前**を、使う順に並べる。
+  #   起動時に「今つながっている物」を上から探し、見つからなければ一覧を出して止まる。
+  #   名前が分からなければ、一度起動すると候補の一覧が出る（SETUP.md 4）。
+  mic_candidates:
+    - AirPods Pro
+    - MacBook Proのマイク       # 最後の砦（本体スピーカーと併せると回り込みます）
+
+  # マイクと「聴く側」が別のデバイスになる組み合わせだけ書く（複数出力装置の点検に使う）。
+  #   束に入っている必要があるのは**聴く側**であって、マイクではない。
+  #   ヘッドセットはマイクと出力が同じ名前なので、書かなくてよい。
+  listening_device_for:
+    Shure MV7: USB Audio Device   # 据え置きマイク＋有線イヤホン
+
+  # capture_backend: blackhole のときだけ使うループバック入力候補。
+  loopback_candidates:
+    - BlackHole 2ch
+
+  # capture_backend: blackhole のときだけ使う会議アプリの「スピーカー」設定。
+  multi_output_name: 会議録音用（複数出力装置）
+
+  # ループバック方式はシステムの音声出力を丸ごと拾うので、会議アプリに依存しない。
+  #   Zoom / Google Meet / Teams / Webex いずれも同じように動く。
+  #   この設定は案内文の文言だけに使う（機能には影響しない）。
+  app_name: Zoom
+
+  similarity_threshold: 0.75    # これを下回った発話は「不明話者N」として暫定登録する
+  max_adapt_embeddings: 10      # 実行中に取り込む embedding の保持数（登録分は常に残る）
+  enroll_duration_sec: 5        # 冒頭の話者登録で1人あたり録る秒数
+  level_check_sec: 3            # 起動セルフチェックでレベルを実測する秒数
+  first_frame_timeout_sec: 5    # 両ストリームの初回フレームが揃うまで待つ上限（時刻合わせ用）
+  skip_enrollment: true         # 冒頭の話者登録を飛ばす（既存 speakers.json があれば使う）
