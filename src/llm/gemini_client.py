@@ -58,16 +58,21 @@ class Usage:
 class GeminiClient:
     """`generateContent` に JSON Schema を付けて呼ぶ。`OllamaClient` と同じ `chat_json` を持つ。"""
 
-    def __init__(self, config: GeminiLlmConfig) -> None:
+    def __init__(self, config: GeminiLlmConfig, *, verified_key: str | None = None) -> None:
         self.config = config
         self.usage = Usage()
         key = ""
-        if config.key_file:
+        if verified_key is not None:
+            # 関門を通った場合は、確認時の値だけを使う。ファイルや環境変数は読み直さない。
+            key = verified_key.strip()
+            if not key:
+                raise ValueError("関門で確認した Gemini の API キーがありません")
+        elif config.key_file:
             path = Path(config.key_file).expanduser()
             if path.exists():
                 lines = path.read_text(encoding="utf-8").strip().splitlines()
                 key = lines[0].strip() if lines else ""
-        self._key = key or os.environ.get("GEMINI_API_KEY", "")
+        self._key = key if verified_key is not None else key or os.environ.get("GEMINI_API_KEY", "")
         if not self._key:
             raise ValueError("Gemini の API キーがありません（llm.gemini.key_file か GEMINI_API_KEY）")
         self._client = httpx.Client(base_url=BASE, timeout=config.timeout_sec)

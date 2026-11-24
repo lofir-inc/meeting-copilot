@@ -13,11 +13,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import yaml  # noqa: E402
 
+from src import private_files
+
 from src.llm.meeting_state import MeetingState  # noqa: E402
 from src.llm.gemini_client import GeminiClient, GeminiLlmConfig  # noqa: E402
 from src.llm.ollama_client import LlmConfig, OllamaClient  # noqa: E402
 from src.llm.state_updater import StateUpdater, StateUpdaterConfig  # noqa: E402
 from src.stt.whisper_client import TranscriptSegment  # noqa: E402
+from src.stt.external_consent import (  # noqa: E402
+    ExternalSendRefused, ExternalSttConfig, approve, gemini_text_allowed, log_text_refusal, record_send,
+)
 
 logger = logging.getLogger(__name__)
 PRICES = {
@@ -31,6 +36,15 @@ PRICES = {
 }
 
 _REPO = Path(__file__).resolve().parent.parent
+
+
+def ask_in_terminal(session: Path, project: str) -> bool | None:
+    """再生する全文と事前資料の送信について、その会議の承認を取る。"""
+    if not sys.stdin.isatty():
+        return None
+    answer = input(f"\n  会議「{session.name}」の全文と事前資料（テキストだけ）を、要約の再生のため"
+                   f"\n  外（Google・プロジェクト {project}）へ出しますか? [y/N]: ")
+    return answer.strip().lower() in {"y", "yes"}
 
 
 def load_segments(path: Path) -> list[TranscriptSegment]:
@@ -86,6 +100,7 @@ def load_prior_tasks(prep_dir: Path | None) -> str:
 
 def main() -> int:
     """コマンドラインから状態再生を実行する。"""
+    private_files.private_umask()
     parser = argparse.ArgumentParser()
     parser.add_argument("transcripts", type=Path)
     parser.add_argument("--interval", type=float, default=30.0)
@@ -111,32 +126,45 @@ def main() -> int:
     system_path = _REPO / "prompts" / "meeting_state_system.md"
     cfg = load_config(args.config)
     cfg.interval_sec = args.interval
+    session_dir = _REPO / "workspace" / "sessions" / args.session
+    private_files.make_session_directory(session_dir)
+    client = None
     if args.llm == "gemini":
-        values = {}
+        settings = {}
         if args.config and args.config.exists():
             with args.config.open(encoding="utf-8") as handle:
-                values = ((yaml.safe_load(handle) or {}).get("llm", {}) or {}).get("gemini", {}) or {}
+                settings = yaml.safe_load(handle) or {}
+        values = (settings.get("llm") or {}).get("gemini") or {}
+        external = ExternalSttConfig.from_mapping((settings.get("meeting") or {}).get("external_stt"))
         known = set(GeminiLlmConfig.__dataclass_fields__)
         gemini_cfg = GeminiLlmConfig(**{k: v for k, v in values.items() if k in known})
         if args.llm_model:
             gemini_cfg.model = args.llm_model
-        client = GeminiClient(gemini_cfg)
-        if not client.health_check():
-            print("Gemini に繋がりません（キーかモデル名を確認）", file=sys.stderr)
-            client.close()
-            return 2
-        print(f"要約エンジン: Gemini（{client.config.model}）送るのはテキストだけ")
-    else:
+        external.text_billing()
+        try:
+            approval = approve(external, session_dir, [],
+                               ask=lambda _prompt: ask_in_terminal(session_dir, external.billing_project))
+            decision = gemini_text_allowed(values, external, timeout_sec=20.0)
+            if not decision.allowed:
+                raise ExternalSendRefused(f"Gemini の課金を確かめられません（{decision.reason}）")
+            client = GeminiClient(gemini_cfg, verified_key=decision.api_key)
+            if not client.health_check():
+                client.close()
+                client = None
+                raise ExternalSendRefused("Gemini に繋がりません（キーかモデル名を確認）")
+            record_send(session_dir, approval, model=client.config.model, note="replay_state")
+        except (ExternalSendRefused, ValueError, OSError) as refused:
+            client = None
+            log_text_refusal(session_dir, f"Gemini は使いません（{refused}）。手元で要約します")
+    if client is None:
         local_cfg = LlmConfig()
-        if args.llm_model:
+        if args.llm_model and args.llm == "ollama":
             local_cfg.model = args.llm_model
         client = OllamaClient(local_cfg)
         if not client.health_check():
             print("Ollama に接続できません: http://localhost:11434", file=sys.stderr)
             client.close()
             return 2
-    session_dir = _REPO / "workspace" / "sessions" / args.session
-    session_dir.mkdir(parents=True, exist_ok=True)
     updater = StateUpdater(client, system_path.read_text(encoding="utf-8"), load_prior_tasks(args.prep_dir), cfg)
     state = MeetingState()
     try:

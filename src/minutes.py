@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Callable
 
 from src.known_people import roster_block
+from src.llm.claude_cli_client import untrusted_record
 from src.text.glossary_candidates import LLM_FILE, split_minutes
 
 logger = logging.getLogger(__name__)
@@ -160,7 +161,7 @@ class MinutesMaker:
         if engine == "claude_cli":
             if self._claude is None:
                 raise RuntimeError("Claude CLI が使えません")
-            return (self._claude.generate_text(f"{instructions}\n\n---\n\n{text}",
+            return (self._claude.generate_text(f"{instructions}\n\n{untrusted_record(text)}",
                                                      timeout_sec=self.config.timeout_sec))
         if engine == "gemini":
             if self._gemini is None:

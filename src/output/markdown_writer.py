@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from src import private_files
 from src.llm.ollama_client import SummaryResponse
 from src.llm.meeting_state import MeetingState
 
@@ -121,7 +122,8 @@ class MarkdownWriter:
     def write_state_json(self, state: MeetingState) -> None:
         """ローリング状態を原子的に JSON ファイルへ書き込む。"""
         temporary_path = self.config.workspace_path / "state.json.tmp"
-        temporary_path.write_text(state.to_json() + "\n", encoding="utf-8")
+        with private_files.private_writer(temporary_path) as handle:
+            handle.write(state.to_json() + "\n")
         os.replace(temporary_path, self.config.state_path)
 
     def append_log(self, chunk_summary: str, start_time: str = "", end_time: str = "") -> None:

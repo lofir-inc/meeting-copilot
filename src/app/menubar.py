@@ -15,6 +15,8 @@ import time
 import webbrowser
 from pathlib import Path
 
+from src.ui import guard
+
 from src.app import login_item, meeting_launch, running
 
 REFRESH_SEC = 5.0
@@ -36,7 +38,7 @@ def _watch_start(process, repo: Path, on_trouble) -> None:
     while time.monotonic() < deadline:
         meeting = running.find_meeting()
         if meeting is not None:
-            webbrowser.open(meeting.url)
+            webbrowser.open(guard.browser_url(meeting.url))
             return
         if process.poll() is not None:
             break                            # 先に死んだ。待っても立たない
@@ -59,8 +61,8 @@ def _applescript(text: str) -> str:
 
 def open_library(repo: Path, python: Path) -> None:
     """会議アシスタントを開く。もう開いていれば、そちらを開くだけ。"""
-    if running.port_open(running.LIBRARY_PORT):
-        webbrowser.open(f"http://{running.HOST}:{running.LIBRARY_PORT}/library")
+    if running.port_open(running.LIBRARY_PORT) and guard.probe(running.LIBRARY_PORT) == "library":
+        webbrowser.open(guard.browser_url(f"http://{running.HOST}:{running.LIBRARY_PORT}/library"))
         return
     subprocess.Popen([str(python), str(Path(repo) / "scripts" / "library_ui.py")])
 
@@ -128,7 +130,7 @@ def run(repo: Path, python: Path) -> int:            # pragma: no cover - 画面
 
         def openMeeting_(self, _sender):
             if self.meeting is not None:
-                webbrowser.open(self.meeting.url)
+                webbrowser.open(guard.browser_url(self.meeting.url))
 
         def openLibrary_(self, _sender):
             open_library(repo, python)

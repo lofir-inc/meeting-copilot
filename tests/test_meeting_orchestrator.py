@@ -26,6 +26,252 @@ from src.stt.whisper_client import TranscriptSegment
 SR = 48000
 
 
+class TestGeminiBillingGate:
+    @pytest.fixture
+    def gate(self, orch, tmp_path, monkeypatch):
+        import logging
+        import subprocess
+        from src.stt.external_consent import Approval
+
+        key = tmp_path / "gemini.key"
+        key.write_text("fake-key", encoding="utf-8")
+        orch._external_cfg.enabled = True
+        orch._external_cfg.provider = "deepgram"
+        orch._external_cfg.billing_project = "fake-project"
+        orch._external_cfg.key_file = str(key)
+        orch._llm_gemini = {"key_file": str(key)}
+        orch._llm_engine = "gemini"
+        orch._verify_engine = "gemini"
+        orch._verifier.disable("no local verifier")
+        monkeypatch.setattr(orch.llm, "health_check", lambda: True)
+        monkeypatch.setattr(mo, "approve", lambda *a, **k: Approval(billing_project="fake-project"))
+        made = []
+
+        class FakeGemini:
+            def __init__(self, config, *, verified_key):
+                self.config = config
+                self.verified_key = verified_key
+                made.append(self)
+
+            def health_check(self):
+                return True
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(mo, "GeminiClient", FakeGemini)
+        monkeypatch.setattr(subprocess, "run", lambda command, **kw: subprocess.CompletedProcess(
+            command, 0, stdout="True", stderr=""))
+        handler = logging.FileHandler(tmp_path / "interview.log", encoding="utf-8")
+        mo.logger.addHandler(handler)
+        try:
+            yield made
+        finally:
+            mo.logger.removeHandler(handler)
+            handler.close()
+
+    @pytest.mark.parametrize("failure", ["unpaid", "error", "timeout", "project", "different", "env"])
+    def test_承認済みでも課金と出どころが不明なら作らない(self, gate, orch, tmp_path, monkeypatch, failure):
+        import subprocess
+
+        if failure == "project":
+            orch._external_cfg.billing_project = ""
+        elif failure == "different":
+            other = tmp_path / "other.key"
+            other.write_text("fake-key", encoding="utf-8")
+            orch._llm_gemini["key_file"] = str(other)
+        elif failure == "env":
+            orch._llm_gemini.clear()
+            monkeypatch.setenv("GEMINI_API_KEY", "fake-env-key")
+        else:
+            def fake_run(command, **kw):
+                if failure == "timeout":
+                    raise subprocess.TimeoutExpired(command, kw["timeout"])
+                return subprocess.CompletedProcess(command, 1 if failure == "error" else 0,
+                                                   stdout="False", stderr="offline")
+            monkeypatch.setattr(subprocess, "run", fake_run)
+        events = orch.bus.subscribe()
+        previous = orch.llm
+        orch._start_external_engines()
+        assert gate == [] and orch.llm is previous
+        assert orch._llm_engine == "local" and orch._llm_approval is None
+        assert orch._verifier.client is None and orch._verify_gemini is None
+        warnings = set()
+        for event in iter(lambda: events.get(0), None):
+            warnings.update(event.data.get("warnings", []))
+        assert len([w for w in warnings if "Gemini の課金を確かめられません" in w]) == 2
+        assert set(orch.bus.latest("status").data["warnings"]) == warnings
+        orch._publish_models()
+        orch._publish_status({"phase": "running", "warnings": []})
+        assert set(orch.bus.latest("status").data["warnings"]) == warnings
+        assert "Gemini の課金を確かめられません" in (tmp_path / "interview.log").read_text(encoding="utf-8")
+        assert not (tmp_path / "external_sends.jsonl").exists()
+
+    def test_課金と出どころを確認したら要約と裏取りを使う(self, gate, orch, tmp_path):
+        orch._start_external_engines()
+        assert len(gate) == 2 and orch.llm is gate[0]
+        assert all(client.verified_key == "fake-key" for client in gate)
+        assert orch._llm_approval is not None and orch._verify_gemini is gate[1]
+        assert orch._verifier.client.gemini is gate[1]
+        entries = [json.loads(line) for line in (tmp_path / "external_sends.jsonl").read_text(encoding="utf-8").splitlines()]
+        assert [entry["note"] for entry in entries] == ["state", "verify"]
+
+    @pytest.mark.parametrize("on_finish", ["minutes", "print"])
+    def test_音声が手元でも全文の送信目的を記録する(self, gate, orch, tmp_path, on_finish):
+        orch._stt_engine = "local"
+        orch._verify_engine = "none"
+        orch._dispatch_cfg.on_finish = on_finish
+        orch._start_external_engines()
+        entries = [json.loads(line) for line in (tmp_path / "external_sends.jsonl").read_text().splitlines()]
+        assert len(entries) == 1
+        assert entries[0]["note"] == "state"
+        assert entries[0]["model"] == orch.llm.config.model
+        assert entries[0]["purposes"] == ["state", "prep"] + (["minutes"] if on_finish == "minutes" else [])
+
+    def test_接続確認に失敗したら全文の記録を残さない(self, gate, orch, tmp_path, monkeypatch):
+        orch._stt_engine = "local"
+        orch._verify_engine = "none"
+        monkeypatch.setattr(mo.GeminiClient, "health_check", lambda self: False)
+        orch._start_external_engines()
+        assert orch._llm_engine == "local"
+        assert orch._llm_approval is None
+        assert not (tmp_path / "external_sends.jsonl").exists()
+
+    def test_送信の記録を書けなければ要約を外へ切り替えない(self, gate, orch, monkeypatch):
+        orch._stt_engine = "local"
+        orch._verify_engine = "none"
+        local = orch.llm
+
+        def broken(*args, **kwargs):
+            assert orch.llm is local, "記録より先に外へ切り替えている"
+            raise PermissionError("書けない")
+
+        monkeypatch.setattr(mo, "record_send", broken)
+        orch._start_external_engines()
+        assert orch._llm_engine == "local"
+        assert orch._llm_approval is None
+        assert not isinstance(orch.llm, mo.GeminiClient)
+
+    def test_議事録を文面に含めなかった承認は後から流用しない(self, gate, orch, monkeypatch):
+        orch._verify_engine = "none"
+        orch._dispatch_cfg.on_finish = "print"
+        orch._start_external_engines()
+        assert orch._llm_engine == "gemini" and orch._llm_approval is not None
+        orch._dispatch_cfg.on_finish = "minutes"
+        calls = []
+        monkeypatch.setattr(mo.subprocess, "run", lambda argv, **kwargs: calls.append(argv))
+        orch._make_minutes_here()
+        assert "--no-external" in calls[0]
+
+    def test_関門を通らなくても既存の裏取り手段を残す(self, gate, orch):
+        local = type("Local", (), {"available": lambda self: True})()
+        orch._verifier.use(local)
+        orch._external_cfg.billing_project = ""
+        assert not orch._start_gemini_verify(None)
+        assert orch._verifier.client is local and gate == []
+
+    @pytest.mark.parametrize("failure", ["unpaid", "error", "timeout"])
+    def test_裏取りだけ外でも承認時の課金拒否を警告とログに残す(self, gate, orch, tmp_path, monkeypatch, failure):
+        import subprocess
+        from src.stt import external_consent as consent
+
+        orch._stt_engine = orch._llm_engine = "local"
+        orch._external_cfg.provider = "gemini"
+        monkeypatch.setattr(mo, "approve", consent.approve)
+        monkeypatch.setattr(orch, "_ask_external_live", lambda *a: True)
+        checked = []
+
+        def run(command, **kwargs):
+            checked.append(command)
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+            return subprocess.CompletedProcess(command, 1 if failure == "error" else 0,
+                                               stdout="False", stderr="offline")
+
+        monkeypatch.setattr(subprocess, "run", run)
+        events = orch.bus.subscribe()
+        orch._start_external_engines()
+
+        assert len(checked) == 1 and gate == []
+        assert orch._verifier.client is None and orch._verify_gemini is None
+        assert orch._llm_approval is None
+        assert orch._stt_engine == orch._llm_engine == "local"
+        warnings = orch.bus.latest("status").data["warnings"]
+        assert len(warnings) == 1 and "Gemini での裏取りは行いません" in warnings[0]
+        assert "確認できないので送りません" in warnings[0]
+        assert any(event.data.get("warnings") == warnings for event in iter(lambda: events.get(0), None))
+        orch._publish_models()
+        orch.bus.publish("status", {"phase": "running", "warnings": []})
+        assert orch.bus.latest("status").data["warnings"] == warnings
+        log = (tmp_path / "interview.log").read_text(encoding="utf-8").splitlines()
+        assert log == warnings
+        assert not (tmp_path / "external_sends.jsonl").exists()
+
+    @pytest.mark.parametrize("result", ["paid", "unpaid", "timeout", "error", "expired"])
+    def test_事前点検と承認と要約と裏取りで同じ課金結果を共有する(self, gate, orch, monkeypatch, result):
+        import subprocess
+        from src.stt import external_consent as consent
+
+        # 承認も本物を通し、Google の課金確認が重ならないことを検証する。
+        monkeypatch.setattr(mo, "approve", consent.approve)
+        monkeypatch.setattr(orch, "_ask_external_live", lambda *a: True)
+        monkeypatch.setattr(mo, "login_and_wait", lambda *a, **k: pytest.fail("ログイン待ちを足さない"))
+        orch._external_cfg.provider = "gemini"
+        orch._external_cfg.auto_login = True
+        checked = []
+
+        def run(command, **kwargs):
+            checked.append(kwargs["timeout"])
+            if result == "timeout":
+                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+            return subprocess.CompletedProcess(command, 1 if result in {"error", "expired"} else 0,
+                                               stdout="True" if result == "paid" else "False",
+                                               stderr="Reauthentication failed" if result == "expired" else "offline")
+
+        monkeypatch.setattr(subprocess, "run", run)
+        assert bool(orch.external_readiness()) is (result != "paid")
+        orch._start_external_engines()
+        first = consent.gemini_text_allowed(orch._llm_gemini, orch._external_cfg)
+        assert consent.gemini_text_allowed(orch._llm_gemini, orch._external_cfg) is first
+        assert first.allowed is (result == "paid")
+        assert len(checked) == 1 and 0 < checked[0] <= 20.0
+        assert len(gate) == (2 if result == "paid" else 0)
+        assert orch._llm_engine == ("gemini" if result == "paid" else "local")
+
+    @pytest.mark.parametrize("paid", [True, False])
+    def test_事前点検がなくても要約と裏取りで課金を一度だけ確かめる(self, gate, orch, monkeypatch, paid):
+        from unittest.mock import Mock
+
+        check = Mock(return_value=(paid, "paid" if paid else "offline"))
+        monkeypatch.setattr("src.stt.external_consent.billing_enabled", check)
+        orch._start_external_engines()
+        assert check.call_count == 1
+        assert len(gate) == (2 if paid else 0)
+
+
+
+
+    @pytest.mark.parametrize("failure", ["different", "env", "project"])
+    def test_readiness_uses_the_same_key_provenance_gate(self, gate, orch, tmp_path, monkeypatch, failure):
+        from src.stt import external_consent as consent
+
+        assert orch._external_cfg.provider == "deepgram"
+        if failure == "different":
+            other = tmp_path / "other.key"
+            other.write_text("fake-key")
+            orch._llm_gemini["key_file"] = str(other)
+        elif failure == "env":
+            orch._llm_gemini.clear()
+            monkeypatch.setenv("GEMINI_API_KEY", "fake-env-key")
+        else:
+            orch._external_cfg.billing_project = ""
+        warnings = orch.external_readiness()
+        assert warnings
+        assert not consent.gemini_text_allowed(orch._llm_gemini, orch._external_cfg).allowed
+        orch._start_external_engines()
+        assert gate == []
+
+
 class FakeStream:
     instances: list["FakeStream"] = []
 
@@ -965,6 +1211,9 @@ class TestAfterMeeting:
         orch._llm_engine = "local"
         orch._hand_over_minutes(orch.session_dir / "minutes_handoff.json")
         orch._llm_engine = "gemini"
+        from src.stt.external_consent import Approval
+        orch._llm_approval = Approval(billing_project="fake-project")
+        orch._llm_approved_purposes = ["state", "prep", "minutes"]
         orch._hand_over_minutes(orch.session_dir / "minutes_handoff.json")
 
         assert calls[0][1].endswith("make_minutes.py") and "--no-external" in calls[0]
@@ -1543,7 +1792,12 @@ class TestVerifyEngine:
         orch._external_cfg.enabled = True
         orch._external_cfg.billing_project = "your-gcp-project"
         fake = self.FakeGemini()
-        monkeypatch.setattr(mo, "GeminiClient", lambda config: fake)
+        monkeypatch.setattr(mo, "GeminiClient", lambda config, **kwargs: fake)
+        key = orch.session_dir / "fake-gemini.key"
+        key.write_text("fake-key", encoding="utf-8")
+        orch._llm_gemini = {"key_file": str(key)}
+        orch._external_cfg.key_file = str(key)
+        monkeypatch.setattr("src.stt.external_consent.billing_enabled", lambda *a, **k: (True, "paid"))
 
         def fake_approve(config, session_dir, files, ask=None):
             if not ask("聞く"):
@@ -1800,7 +2054,11 @@ class TestLiveSttLabel:
             monkeypatch.setattr(dg, "DeepgramApi", lambda key, config: object())
         orch._external_cfg.provider = provider
         orch._external_cfg.deepgram_key_file = "dummy.key"
-        orch._external_cfg.key_file = "dummy.key"
+        key = orch.session_dir / "fake-audio.key"
+        key.write_text("dummy-key", encoding="utf-8")
+        orch._external_cfg.key_file = str(key)
+        orch._external_cfg.billing_project = "fake-project"
+        monkeypatch.setattr("src.stt.external_consent.billing_enabled", lambda *a, **k: (True, "paid"))
         assert orch._start_live_stt(approval={}) is True
         return orch.session_info()["models"]["stt"]
 
@@ -1956,7 +2214,8 @@ class TestExternalReadiness:
         assert "API キーのファイルがありません" in orch.external_readiness()[0]
 
     def test_要約だけ外でも点検する(self, orch, monkeypatch):
-        monkeypatch.setattr(mo, "billing_enabled", lambda project, **kwargs: (False, "課金が有効ではありません"))
+        monkeypatch.setattr("src.stt.external_consent.billing_enabled",
+                            lambda project, **kwargs: (False, "課金が有効ではありません"))
         self._external(orch, stt_engine="local", llm_engine="gemini")
 
         warning = orch.external_readiness()[0]

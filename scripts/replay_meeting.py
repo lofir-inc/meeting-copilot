@@ -44,6 +44,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import yaml  # noqa: E402
 
+from src import private_files
+
 from src.audio.enrolled_diarizer import DiarizerConfig, EnrolledDiarizer  # noqa: E402
 from src.audio.turn_splitter import TurnSplitConfig, slice_chunk, split_turns  # noqa: E402
 from src.audio.vad import AudioChunk, ChunkBuilder, VadConfig  # noqa: E402
@@ -53,6 +55,7 @@ from src.output.markdown_writer import MarkdownWriter, OutputConfig  # noqa: E40
 from src.stt.whisper_client import SttConfig, TranscriptSegment, WhisperClient  # noqa: E402
 from src.ui.bus import EventBus  # noqa: E402
 from src.ui.server import PortInUse, UiConfig, build_app, start_ui_server  # noqa: E402
+from src.ui import guard  # noqa: E402
 from scripts.replay_state import load_prior_tasks  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -513,6 +516,7 @@ def report(
 
 
 def main() -> int:
+    private_files.private_umask()
     parser = argparse.ArgumentParser(
         description="録画ファイルを本番と同じパイプラインに流して試す",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -608,7 +612,7 @@ def main() -> int:
     media = Path(args.media).expanduser()
     session_name = args.session or f"replay-{media.stem}"
     session_dir = root / "workspace" / "sessions" / session_name
-    session_dir.mkdir(parents=True, exist_ok=True)
+    private_files.make_session_directory(session_dir)
 
     print("=" * 70)
     print("  録画リプレイ（オフライン検証）")
@@ -655,8 +659,8 @@ def main() -> int:
         ui_cfg = UiConfig(host="127.0.0.1", port=args.port, open_browser=False)
         try:
             ui_actions = ReplayUiActions(diarizer, session_dir, config)
-            start_ui_server(build_app(bus, ui_actions, session_dir), ui_cfg)
-            print(f"  UI        : http://{ui_cfg.host}:{ui_cfg.port}/")
+            ui_thread = start_ui_server(build_app(bus, ui_actions, session_dir), ui_cfg)
+            print(f"  UI        : {guard.browser_url(f'http://{ui_cfg.host}:{ui_thread.port}/')}")
         except PortInUse as exc:
             # 黙って続けると、ブラウザは前のセッションを見続ける。ここで止める
             print(f"\n  ✗ {exc}\n", file=sys.stderr)

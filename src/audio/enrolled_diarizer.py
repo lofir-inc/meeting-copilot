@@ -45,6 +45,8 @@ MIN_DURATION_SEC = 0.6
 
 UNKNOWN_PREFIX = "不明話者"
 
+from src import private_files
+
 
 def _get_encoder():
     global _encoder
@@ -642,7 +644,8 @@ class EnrolledDiarizer:
                 for speaker in self._speakers.values()
             ],
         }
-        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        with private_files.private_writer(path) as handle:
+            json.dump(payload, handle, ensure_ascii=False)
         logger.info("話者登録を保存: %s (%d 名)", path, len(self._speakers))
 
     @classmethod

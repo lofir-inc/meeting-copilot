@@ -34,6 +34,8 @@ import soundfile as sf
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src import private_files
+
 from src.audio.segment_labeler import label_segments  # noqa: E402
 from src.audio.enrolled_diarizer import (  # noqa: E402
     DiarizerConfig,
@@ -127,6 +129,7 @@ def run_online(rows, audio, rate, args) -> tuple[list[dict], collections.Counter
 
 
 def main() -> int:
+    private_files.private_umask()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--mode", choices=["online", "centroid"], default="online")
     parser.add_argument("--segments", type=Path, required=True, help="話者を当て直したい jsonl")

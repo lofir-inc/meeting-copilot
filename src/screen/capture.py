@@ -26,6 +26,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from src import private_files
+
 logger = logging.getLogger(__name__)
 
 SCREENS_DIR = "screens"
@@ -274,8 +276,12 @@ class ScreenWatcher:
             return None
         at = float(self._meeting_clock())
         temporary = self.session_dir / SCREENS_DIR / f"_tmp.jpg"
+        temporary.parent.mkdir(parents=True, exist_ok=True)
+        with private_files.private_writer(temporary, binary=True):
+            pass
         if not capture_window(window["id"], temporary):
             return None
+        temporary.chmod(0o600)
         mark = fingerprint(temporary)
         if difference(self._last, mark) < self.config.change_threshold:
             self.skipped += 1

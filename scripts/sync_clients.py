@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from src import clients  # noqa: E402
 
 
 def main() -> int:
+    argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter).parse_args()
     settings_path = REPO / "config" / "settings.yaml"
     settings = yaml.safe_load(settings_path.read_text(encoding="utf-8")) if settings_path.exists() else {}
     shared = ((settings or {}).get("task_hub") or {}).get("shared_dir", "~/.claude/skills/_shared")

@@ -7,7 +7,7 @@
     python scripts/gemini_transcribe.py 録音.wav --out out.jsonl --speaker 自分
     python scripts/gemini_transcribe.py 相手.wav --out out.jsonl --diarize   # 話者分けも任せる
 
-API キーは環境変数 GEMINI_API_KEY か `--key-file` から読む（画面にもログにも出さない）。
+API キーは external_stt.key_file と同じ `--key-file` から読む（画面にもログにも出さない）。
   チャットや履歴に残さないため、キーはファイルに置いて渡す（例: ~/.config/meeting-copilot/gemini.key）。
 
 入口が 2 つある。モデル名で切り替わる（2026-09-13 に実測で判明）。
@@ -47,8 +47,13 @@ import time
 import urllib.error
 from pathlib import Path
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src import private_files
+
+from src.stt.external_consent import ExternalSendRefused, ExternalSttConfig, require_gemini_audio_key
 from src.stt.gemini_transcribe import (  # noqa: E402
     BASE,
     TranscribeApi,
@@ -179,15 +184,11 @@ def load_vocabulary(path: Path, limit: int = 1000) -> list[str]:
     return terms[:limit]
 
 
-def ask_transcribe(model: str, path: Path, *, language: str, vocabulary: list[str],
-                   diarize: bool, timestamps: bool, timeout: float) -> dict:
+def ask_transcribe(api: TranscribeApi, path: Path) -> dict:
     """専用モデルに 1 区間を投げる。返りは汎用側と同じ {"data": {...}, "usage": {...}}。
 
     口の実装は `src/stt/gemini_transcribe.py`（会議中の 30 秒刻みと同じものを使う）。
     """
-    api = TranscribeApi(os.environ["GEMINI_API_KEY"], TranscribeConfig(
-        model=model, language=language, timeout_sec=timeout,
-        diarize=diarize, timestamps=timestamps, vocabulary=vocabulary))
     result = api.transcribe_file(path)
     return {"data": {"utterances": result["utterances"]}, "usage": result["usage"]}
 
@@ -227,6 +228,7 @@ def ask_gemini(model: str, audio: bytes, prompt: str, timeout: float) -> dict:
 
 
 def main() -> int:
+    private_files.private_umask()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("audio", type=Path)
     parser.add_argument("--out", type=Path, required=True)
@@ -245,18 +247,13 @@ def main() -> int:
     parser.add_argument("--keep-silence", action="store_true",
                         help="末尾の無音を落とさない（既定は落とす）")
     parser.add_argument("--key-file", type=Path, help="API キーを書いたファイル（1 行目だけ読む。中身は出力しない）")
+    parser.add_argument("--config", type=Path,
+                        default=Path(__file__).resolve().parent.parent / "config" / "settings.yaml",
+                        help="キーの出どころを確認する external_stt の設定")
     parser.add_argument("--billing-project", default=os.environ.get("GEMINI_BILLING_PROJECT"),
                         help="キーの所属プロジェクト ID。課金が有効か確かめてから送る（必須）")
     parser.add_argument("--timeout", type=float, default=900.0)
     args = parser.parse_args()
-
-    if args.key_file:
-        key = args.key_file.read_text(encoding="utf-8").strip().splitlines()[0].strip()
-        if not key:
-            raise SystemExit(f"{args.key_file} が空です")
-        os.environ["GEMINI_API_KEY"] = key      # 値は表示しない
-    if not os.environ.get("GEMINI_API_KEY"):
-        raise SystemExit("GEMINI_API_KEY が設定されていません（--key-file でも渡せます）")
 
     # 音声を外へ出す前の関門。冒頭の require_paid_project の注記を読むこと
     if not args.billing_project:
@@ -265,7 +262,17 @@ def main() -> int:
             "キーの所属プロジェクト ID を渡してください。課金が有効かを確かめてから送ります。\n"
             "無料枠は送った内容が製品改善に使われ、人間のレビュアーが読むことがあります。"
         )
+    try:
+        settings = yaml.safe_load(args.config.read_text(encoding="utf-8")) or {}
+        external = ExternalSttConfig.from_mapping((settings.get("meeting") or {}).get("external_stt"))
+        if args.billing_project != external.billing_project:
+            raise ExternalSendRefused("指定したプロジェクトが external_stt.billing_project と一致しません")
+        key = require_gemini_audio_key(external, key_file=args.key_file or "")
+    except (ExternalSendRefused, OSError, ValueError) as refused:
+        print(f"Gemini へは送りません（{refused}）", file=sys.stderr)
+        return 1
     require_paid_project(args.billing_project)
+    os.environ["GEMINI_API_KEY"] = key      # ★汎用モデルにも確認時の値だけを渡す
 
     dedicated = "transcribe" in args.model
     # 専用モデルは話者分け・語の時刻を付けると 30 分まで。余裕を見て 25 分で刻む
@@ -278,6 +285,10 @@ def main() -> int:
               file=sys.stderr)
         vocabulary = []
 
+    api = (TranscribeApi(key, TranscribeConfig(
+        model=args.model, language=args.language, timeout_sec=args.timeout,
+        diarize=args.diarize, timestamps=not args.no_timestamps, vocabulary=vocabulary))
+        if dedicated else None)
     recorded = audio_seconds(args.audio)
     total = recorded if args.keep_silence else content_end(args.audio, recorded)
     chunk = chunk_min * 60
@@ -300,10 +311,7 @@ def main() -> int:
             to_mp3(args.audio, begin, min(chunk, total - begin), piece)
             try:
                 if dedicated:
-                    result = ask_transcribe(args.model, piece, language=args.language,
-                                            vocabulary=vocabulary, diarize=args.diarize,
-                                            timestamps=not args.no_timestamps,
-                                            timeout=args.timeout)
+                    result = ask_transcribe(api, piece)
                 else:
                     prompt = PROMPT_DIARIZE if args.diarize else PROMPT_PLAIN
                     result = ask_gemini(args.model, piece.read_bytes(), prompt, args.timeout)

@@ -19,6 +19,8 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 
+from src.ui import guard
+
 HOST = "127.0.0.1"
 DASHBOARD_PORTS = range(8765, 8775)
 """会議のダッシュボードが使いうるポート（`src/ui/server.py` の PORT_TRIES と同じ幅）。"""
@@ -55,7 +57,7 @@ def port_open(port: int, host: str = HOST, timeout: float = 0.15) -> bool:
 def _ask(port: int, timeout: float = 0.6) -> dict | None:
     """`/api/status` に聞く。会議でなければ None（例外にしない）。"""
     try:
-        with urllib.request.urlopen(f"http://{HOST}:{port}/api/status", timeout=timeout) as response:
+        with guard.verified_open(port, "/api/status", host=HOST, kind="meeting", timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, ValueError):
         return None

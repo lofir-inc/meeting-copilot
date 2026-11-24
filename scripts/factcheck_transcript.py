@@ -19,6 +19,8 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src import private_files
+
 from src.llm.factcheck import Claim, FactCheckConfig, FactChecker  # noqa: E402
 from src.llm.ollama_client import LlmConfig, OllamaClient  # noqa: E402
 from src.stt.whisper_client import TranscriptSegment  # noqa: E402
@@ -35,6 +37,7 @@ def windows(segments: list[TranscriptSegment], width: float) -> list[list[Transc
 
 
 def main() -> int:
+    private_files.private_umask()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("transcripts", type=Path)
     parser.add_argument("--config", type=Path, default=REPO / "config" / "settings.yaml")

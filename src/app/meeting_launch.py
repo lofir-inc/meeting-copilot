@@ -14,7 +14,10 @@
 from __future__ import annotations
 
 import subprocess
+import os
 from pathlib import Path
+
+from src import private_files
 
 LOG_NAME = "last_meeting.log"
 """会議の起動ログ。毎回まっさらにする（前の回の失敗と混ざると読めない）。"""
@@ -32,14 +35,20 @@ def start(repo: Path, python: Path, popen=None) -> subprocess.Popen:
 
     `popen` は呼ぶときに決める（既定引数で束ねると、差し替えが効かない）。
     """
+    private_files.private_umask()
     popen = popen or subprocess.Popen
     repo, python = Path(repo), Path(python)
     path = log_path(repo)
     path.parent.mkdir(parents=True, exist_ok=True)
-    handle = path.open("w", encoding="utf-8", buffering=1)
-    return popen([str(python), "-m", "src.main", "--mode", "meeting_loopback"],
-                 cwd=str(repo), stdout=handle, stderr=subprocess.STDOUT,
-                 stdin=subprocess.DEVNULL, start_new_session=True)
+    handle = os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600),
+                       "w", encoding="utf-8", buffering=1)
+    os.fchmod(handle.fileno(), 0o600)
+    try:
+        return popen([str(python), "-m", "src.main", "--mode", "meeting_loopback"],
+                     cwd=str(repo), stdout=handle, stderr=subprocess.STDOUT,
+                     stdin=subprocess.DEVNULL, start_new_session=True)
+    finally:
+        handle.close()
 
 
 def tail(repo: Path, lines: int = 12) -> str:

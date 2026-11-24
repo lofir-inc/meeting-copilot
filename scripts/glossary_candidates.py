@@ -24,6 +24,8 @@ import yaml
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
+from src import private_files
+
 from src.text.glossary_candidates import (  # noqa: E402
     CANDIDATES_FILE,
     append_to_glossary,
@@ -94,6 +96,7 @@ def refresh(session: Path, settings: dict) -> tuple[Path, list, Path]:
 
 
 def main() -> int:
+    private_files.private_umask()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("session", type=Path)
     parser.add_argument("--accept", action="store_true", help="チェックした候補を辞書に足す")

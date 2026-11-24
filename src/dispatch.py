@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import shlex
+import string
+import unicodedata
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -23,7 +26,7 @@ class DispatchConfig:
     enabled: bool = True
     context_sec: float = 90.0
     agent_repo: str = ""
-    agent_command: str = "claude '{brief} を読み、このタスクに着手してください。完了したら {brief} の末尾に結果を追記してください'"
+    agent_command: str = "claude {brief}' を読み、このタスクに着手してください。完了したら '{brief}' の末尾に結果を追記してください'"
     agent_title: str = "▶ {task}"
     on_finish: str = "agent"
     minutes_repo: str = ""
@@ -146,13 +149,43 @@ def dispatch(session_dir: Path, state: MeetingState, todo: Item, segments: list[
             result.errors["slack"] = str(exc)
     if agent is not None and cfg.agent_repo:
         try:
-            command = cfg.agent_command.format(brief=str(brief_path), task=todo.text)
-            result.agent = agent.create_terminal(cfg.agent_repo, cfg.agent_title.format(task=todo.text), command)
+            command = _agent_command(cfg.agent_command, brief_path)
+            title = "".join(c for c in cfg.agent_title.format(task=todo.text)
+                            if not unicodedata.category(c).startswith("C") and c not in "\u2028\u2029")
+            result.agent = agent.create_terminal(cfg.agent_repo, title, command)
         except Exception as exc:  # 外部連携の失敗は記録して終了する。
             logger.warning("Agent dispatch failed for %s: %s", todo.id, exc)
             result.errors["agent"] = str(exc)
     _append_record(dispatch_path, result)
     return result
+
+
+def _agent_command(template: str, brief_path: Path) -> str:
+    # 以前の既定値を設定に保存している場合も、安全な新しい書式へ移す。
+    legacy = "claude '{brief} を読み、このタスクに着手してください。完了したら {brief} の末尾に結果を追記してください'"
+    if template == legacy:
+        template = DispatchConfig().agent_command
+    for _, name, spec, conversion in string.Formatter().parse(template):
+        if name is not None and (name != "brief" or spec or conversion):
+            raise ValueError("agent_command は {brief} だけを使用できます（{task} は禁止）")
+    # コマンド置換を含む書式は受け付けない。
+    if "`" in template or "$(" in template:
+        raise ValueError("agent_command にコマンド置換（` や $(）は使えません")
+    # shlex.quote は引用符の外で使う。独自設定で引用符を重ねる場合は起動を拒む。
+    quote = ""
+    escaped = False
+    for index, char in enumerate(template):
+        if template.startswith("{brief}", index) and (quote or escaped):
+            raise ValueError("agent_command の {brief} は引用符の外に置いてください")
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif char == quote:
+            quote = ""
+        elif char in "\"'" and not quote:
+            quote = char
+    return template.format(brief=shlex.quote(str(brief_path)))
 
 
 def write_minutes_handoff(session_dir: Path, state: MeetingState, segments: list[TranscriptSegment], session: dict, dispatched: list[DispatchResult], corrections: list[dict] | None = None, mark_aizuchi: bool = True) -> tuple[Path, Path]:

@@ -31,11 +31,15 @@ sys.path.insert(0, str(REPO / "scripts"))
 
 from replay_meeting import decode_audio  # noqa: E402
 
+from src import private_files
+
 from src.audio.enrolled_diarizer import DiarizerConfig, EnrolledDiarizer  # noqa: E402
 from src.audio.segment_labeler import label_segments  # noqa: E402
 from src.audio.vad import ChunkBuilder, VadConfig  # noqa: E402
-from src.stt.external_consent import ExternalSendRefused, ExternalSttConfig, approve, record_send  # noqa: E402
-from src.stt.gemini_transcribe import TranscribeApi, TranscribeConfig, load_key  # noqa: E402
+from src.stt.external_consent import (  # noqa: E402
+    ExternalSendRefused, ExternalSttConfig, approve, log_text_refusal, record_send, require_gemini_audio_key,
+)
+from src.stt.gemini_transcribe import TranscribeApi, TranscribeConfig  # noqa: E402
 from src.stt.live_batch import (LiveBatchConfig, WindowAccumulator,  # noqa: E402
                                 config_from as live_config_from, rows_in_meeting_time)
 
@@ -68,6 +72,7 @@ def windows_of(audio: np.ndarray, sample_rate: int, vad: VadConfig, live: LiveBa
 
 
 def main() -> int:
+    private_files.private_umask()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--send", action="store_true", help="実際に外へ投げる（既定は投げない）")
     parser.add_argument("--approved", action="store_true",
@@ -110,15 +115,18 @@ def main() -> int:
     if not args.approved and not sys.stdin.isatty():
         print("✗ 端末から実行してください（画面が無いと承認を聞けないので、送らずに終わります）")
         return 1
+    external.text_billing()
     try:
         approval = approve(external, session, [remote_path],
                            ask=(lambda prompt: True) if args.approved else None)
+        key = require_gemini_audio_key(external)
     except ExternalSendRefused as refused:
         print(f"\n  送りません（{refused}）")
+        log_text_refusal(session, str(refused))
         return 0
     record_send(session, approval, model=external.model, note="selftest_live")
 
-    api = TranscribeApi(load_key(external.key_file),
+    api = TranscribeApi(key,
                         TranscribeConfig(model=external.model, timeout_sec=external.timeout_sec))
     diarizer_values = dict(meeting.get("diarizer", {}))
     diarizer = EnrolledDiarizer(DiarizerConfig(**{k: v for k, v in diarizer_values.items()

@@ -24,6 +24,7 @@ import re
 import select
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +39,37 @@ JST = ZoneInfo("Asia/Tokyo")
 
 class ExternalSendRefused(Exception):
     """関門を通らなかった。呼び出し側はローカル経路へ落ちること。"""
+
+
+@dataclass(frozen=True)
+class GeminiTextDecision:
+    allowed: bool
+    reason: str
+    api_key: str = field(default="", repr=False)
+
+
+@dataclass
+class SessionBillingCheck:
+    """同じ会議では成功・失敗とも共有する。別の会議には持ち越さない。"""
+
+    _project: str | None = field(default=None, init=False)
+    _result: tuple[bool, str] | None = field(default=None, init=False)
+
+    def check(self, project: str, *, timeout_sec: float = 20.0) -> tuple[bool, str]:
+        if self._result is not None:
+            if project != self._project:
+                return False, "課金を確認したプロジェクトと一致しません"
+            return self._result
+        self._project = project
+        timeout_sec = min(timeout_sec, 20.0)
+        started = time.monotonic()
+        try:
+            self._result = billing_enabled(project, timeout_sec=timeout_sec)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            self._result = False, "課金状態を確認できません"
+        if time.monotonic() - started >= timeout_sec:
+            self._result = False, "課金状態の確認が時間切れになりました"
+        return self._result
 
 
 @dataclass
@@ -88,9 +120,17 @@ class ExternalSttConfig:
     席を外している間ずっと止まって議事録ができない。返事が無い＝承認されていない。
     """
 
+    _text_billing: SessionBillingCheck | None = field(default=None, init=False, repr=False)
+    _text_decision: GeminiTextDecision | None = field(default=None, init=False, repr=False)
+
+    def text_billing(self) -> SessionBillingCheck:
+        if self._text_billing is None:
+            self._text_billing = SessionBillingCheck()
+        return self._text_billing
+
     @classmethod
     def from_mapping(cls, values: dict | None) -> "ExternalSttConfig":
-        known = set(cls.__dataclass_fields__)
+        known = {name for name, info in cls.__dataclass_fields__.items() if info.init}
         return cls(**{key: value for key, value in (values or {}).items() if key in known})
 
 
@@ -127,13 +167,84 @@ def billing_enabled(project: str, *, timeout_sec: float = 60.0) -> tuple[bool, s
     確認専用のサービスアカウントの鍵があれば先にそれで聞く（ログイン切れの影響を受けない）。
       それで確かめられなければ、人のログインで聞き直す。
     """
+    deadline = time.monotonic() + timeout_sec
     credential = billing_credential()
     if credential is not None:
-        ok, reason = _ask_billing(project, timeout_sec, credential)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False, "課金状態の確認が時間切れになりました"
+        ok, reason = _ask_billing(project, remaining, credential)
+        if time.monotonic() >= deadline:
+            return False, "課金状態の確認が時間切れになりました"
         if ok:
             return ok, reason
         logger.warning("確認専用のアカウントでは課金を確かめられませんでした（人のログインで聞き直します）: %s", reason)
-    return _ask_billing(project, timeout_sec, None)
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return False, "課金状態の確認が時間切れになりました"
+    result = _ask_billing(project, remaining, None)
+    if time.monotonic() >= deadline:
+        return False, "課金状態の確認が時間切れになりました"
+    return result
+
+
+def gemini_text_allowed(
+    llm_gemini: dict, external: ExternalSttConfig, *, timeout_sec: float = 20.0,
+) -> GeminiTextDecision:
+    """文字を送るキーの出どころと Google の課金を確認する。承認は呼び出し側で別に取る。
+
+    成功・失敗と確認時のキーを会議の間だけ保持する。クライアントはこのキーだけを使う。
+    """
+    if external._text_decision is None:
+        external._text_decision = _check_gemini_text(llm_gemini, external, timeout_sec=timeout_sec)
+    return external._text_decision
+
+
+def _check_gemini_text(
+    llm_gemini: dict, external: ExternalSttConfig, *, timeout_sec: float,
+) -> GeminiTextDecision:
+    if not external.billing_project or not external.billing_project.strip():
+        return GeminiTextDecision(False, "送り先のプロジェクト ID が設定されていません（meeting.external_stt.billing_project）")
+    unknown_key = "キーの出どころを確かめられません"
+    if not llm_gemini.get("key_file") or not external.key_file:
+        return GeminiTextDecision(False, unknown_key)
+    try:
+        key = Path(llm_gemini["key_file"]).expanduser().resolve(strict=True)
+        expected = Path(external.key_file).expanduser().resolve(strict=True)
+        if key != expected or not key.is_file():
+            return GeminiTextDecision(False, unknown_key)
+        lines = key.read_text(encoding="utf-8").strip().splitlines()
+        if not lines or not lines[0].strip():
+            return GeminiTextDecision(False, unknown_key)
+    except (OSError, TypeError, ValueError, RuntimeError):
+        return GeminiTextDecision(False, unknown_key)
+    ok, reason = external.text_billing().check(external.billing_project, timeout_sec=timeout_sec)
+    return GeminiTextDecision(ok, reason, api_key=lines[0].strip() if ok else "")
+
+
+def require_gemini_audio_key(
+    external: ExternalSttConfig, *, key_file: str | Path | None = None,
+    timeout_sec: float = 20.0,
+) -> str:
+    """音声の実際の送り先に合わせて Google を確認し、確認時のキーだけを返す。
+
+    provider が Deepgram でも Gemini の課金を確認する。文字用のキーの判定は
+    流用せず、課金の結果だけを同じ会議内で共有する。
+    """
+    decision = _check_gemini_text(
+        {"key_file": external.key_file if key_file is None else key_file},
+        external, timeout_sec=timeout_sec,
+    )
+    if not decision.allowed:
+        raise ExternalSendRefused(f"Gemini の音声送信を許可できません（{decision.reason}）")
+    return decision.api_key
+
+
+def log_text_refusal(session_dir: Path, message: str) -> None:
+    """単独で動くスクリプトの警告も、会議の interview.log に残す。"""
+    logger.warning("%s", message)
+    with (session_dir / "interview.log").open("a", encoding="utf-8") as handle:
+        handle.write(f"{datetime.now(JST).isoformat(timespec='seconds')} [WARNING] {message}\n")
 
 
 def _ask_billing(project: str, timeout_sec: float, credential: Path | None) -> tuple[bool, str]:
@@ -326,10 +437,15 @@ def paid_account(config: ExternalSttConfig) -> tuple[bool, str]:
         except Exception as error:                    # noqa: BLE001
             return False, f"Deepgram の口座を確かめられません（{error}）"
         return bool(found.get("ok")), str(found.get("why", ""))
+    if config._text_billing is not None:
+        return config._text_billing.check(config.billing_project)
     return billing_enabled(config.billing_project)
 
 
-def record_send(session_dir: Path, approval: Approval, *, model: str, note: str = "") -> Path:
+def record_send(
+    session_dir: Path, approval: Approval, *, model: str, note: str = "",
+    purposes: list[str] | None = None,
+) -> Path:
     """送ったことをセッションに残す（後から辿れるように）。"""
     path = session_dir / SEND_LOG
     entry = {
@@ -339,6 +455,7 @@ def record_send(session_dir: Path, approval: Approval, *, model: str, note: str 
         "model": model,
         "files": [file.name for file in approval.files],
         "note": note,
+        "purposes": purposes if purposes is not None else ([note] if note else []),
     }
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(entry, ensure_ascii=False) + "\n")

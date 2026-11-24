@@ -20,6 +20,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from src.llm.claude_cli_client import untrusted_record
+
 logger = logging.getLogger(__name__)
 
 CARD_CATEGORIES = {"判断軸", "価値観", "行動原則", "ビジョン", "思考パターン"}
@@ -180,7 +182,7 @@ def personas_of(notion, persona_db: str, people_master_id: str) -> list[dict]:
 def _ask(llm, prompt: str, body: str) -> list[dict]:
     """LLM に投げて JSON の配列をもらう。失敗しても連鎖を止めない。"""
     try:
-        return extract_json(llm.generate_text(f"{prompt}\n\n## 会議の全文\n{body}"))
+        return extract_json(llm.generate_text(f"{prompt}\n\n## 会議の全文\n{untrusted_record(body)}"))
     except Exception as exc:                        # noqa: BLE001 - CLI 側の失敗は理由だけ残す
         logger.warning("抽出に失敗しました: %s", exc)
         raise

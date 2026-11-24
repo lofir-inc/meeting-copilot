@@ -21,15 +21,21 @@
 
 from __future__ import annotations
 
+import argparse
 import subprocess
 import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
 SESSION = "selftest-external"
+
+from src import private_files
 
 
 def main() -> int:
+    argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter).parse_args()
+    private_files.private_umask()
     session = REPO / "workspace" / "sessions" / SESSION
     if not (session / "recording_remote.wav").exists():
         print("── 合成音声のセッションを作ります ──")

@@ -11,7 +11,7 @@
   4. 貼り付け用の指示書（minutes_prompt.md。何も無くても、好きな AI チャットに貼れば議事録になる）
 
 Gemini を使うときは、外へ出す前に**その場で承認を取り、課金が有効か確かめる**（会議中と同じ関門）。
-  会議の画面で既に承認していた場合は、呼び出し側が --approved-external を付ける。
+  会議の画面で議事録を含む全文の送信を承認していた場合に限り、呼び出し側が --approved-external を付ける。
 """
 
 from __future__ import annotations
@@ -27,12 +27,16 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "scripts"))
 
+from src import private_files
+
 from src.llm.claude_cli_client import ClaudeCliClient  # noqa: E402
 from src.llm.gemini_client import GeminiClient, GeminiLlmConfig  # noqa: E402
 from src.llm.ollama_client import LlmConfig, OllamaClient  # noqa: E402
 from src import clients, known_people
 from src.minutes import Availability, MinutesConfig, MinutesMaker, label, resolve_order  # noqa: E402
-from src.stt.external_consent import ExternalSendRefused, ExternalSttConfig, approve, record_send  # noqa: E402
+from src.stt.external_consent import (  # noqa: E402
+    ExternalSendRefused, ExternalSttConfig, approve, gemini_text_allowed, log_text_refusal, record_send,
+)
 
 
 def load_config(path: Path | None) -> dict:
@@ -65,12 +69,13 @@ def _client_name(session_dir) -> str:
 
 
 def main() -> int:
+    private_files.private_umask()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("session", type=Path)
     parser.add_argument("--engine", choices=["auto", "claude_cli", "gemini", "local", "none"])
     parser.add_argument("--config", type=Path)
     parser.add_argument("--approved-external", action="store_true",
-                        help="この会議で外へのテキスト送信を画面で承認済み。呼び出し側が付けるもの"
+                        help="会議の画面で議事録を含む全文の送信を承認していた場合に限り、呼び出し側が付けるもの"
                              "（課金の確認と送信の記録はそのまま通る）")
     parser.add_argument("--no-external", action="store_true",
                         help="外（Gemini）は使わない。会議の画面で「手元で作る」を選んだ会議に付ける"
@@ -97,20 +102,28 @@ def main() -> int:
     wants_gemini = (not args.no_external and minutes_cfg.engine in {"auto", "gemini"} and external_cfg.enabled
                     and (minutes_cfg.engine == "gemini" or claude is None))
     if wants_gemini:
+        external_cfg.text_billing()
         try:
             approval = approve(external_cfg, args.session, [],
                                ask=(lambda prompt: True) if args.approved_external
                                else (lambda prompt: ask_in_terminal(args.session, external_cfg.billing_project)))
+            decision = gemini_text_allowed(llm_values.get("gemini") or {}, external_cfg, timeout_sec=20.0)
+            if not decision.allowed:
+                raise ExternalSendRefused(f"Gemini の課金を確かめられません（{decision.reason}）")
             known = set(GeminiLlmConfig.__dataclass_fields__)
             gemini = GeminiClient(GeminiLlmConfig(**{k: v for k, v in (llm_values.get("gemini") or {}).items()
-                                                      if k in known}))
+                                                      if k in known}), verified_key=decision.api_key)
             record_send(args.session, approval, model=gemini.config.model, note="minutes")
         except (ExternalSendRefused, ValueError, OSError) as refused:
-            print(f"  Gemini は使いません（{refused}）")
+            message = f"Gemini は使いません（{refused}）"
+            print(f"  {message}")
+            log_text_refusal(args.session, message)
             gemini = None
 
     available = Availability(claude_cli=claude is not None, gemini=gemini is not None, local=local is not None)
     order = resolve_order(minutes_cfg, available)
+    if minutes_cfg.engine == "gemini" and gemini is None:
+        order = (["local"] if local is not None else []) + ["none"]
     print(f"議事録の手段: {' → '.join(label(name) for name in order)}")
 
     # その会社の会議に出てくる人を集めて渡す（一覧に無い人名を「誤変換の候補」に挙げさせる）。
