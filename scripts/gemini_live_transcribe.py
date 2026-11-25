@@ -7,7 +7,7 @@
 出力は `scripts/score_transcript.py` でそのまま採点できる。
 
 口の形（2026-09-13 に実測で確定。**推測で作らない**）
-  - 入口は `wss://…/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=`
+  - 入口は `wss://…/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`（認証は `x-goog-api-key` ヘッダ）
   - setup は `{"setup": {"model": "models/…", "input_audio_transcription": {}}}`
     HTTP 側の `generation_config.transcription_config` は **400 で弾かれる**（別物）
   - 返ってくるもの:
@@ -21,7 +21,7 @@
   話者は付かない。VAD の時刻で手元の録音を切って resemblyzer に渡す
     （`src/audio/segment_labeler.py`。2026-09-11 の実会議で 97%）
 
-送る前に `--billing-project` の課金を確かめる（無料枠は送った内容が製品改善に使われる）。
+送る前に external_stt のプロジェクト・キーの出どころと課金を確かめる。
 """
 
 from __future__ import annotations
@@ -35,10 +35,16 @@ import sys
 import time
 from pathlib import Path
 
+import yaml
+
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from src.stt.external_consent import billing_enabled  # noqa: E402
+from src import private_files
+
+from src.stt.external_consent import (  # noqa: E402
+    ExternalSendRefused, ExternalSttConfig, require_gemini_audio_key,
+)
 
 HOST = "generativelanguage.googleapis.com"
 PATH = "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
@@ -84,7 +90,8 @@ async def one_session(model: str, key: str, pcm: bytes, base_sec: float, speed: 
     going_away = asyncio.Event()
     last_done = [base_sec]          # 確定が取れた最後の時刻（全体の秒）
 
-    async with websockets.connect(f"wss://{HOST}{PATH}?key={key}", max_size=None,
+    async with websockets.connect(f"wss://{HOST}{PATH}",
+                                  additional_headers={"x-goog-api-key": key}, max_size=None,
                                   open_timeout=60, ping_interval=20) as socket:
         await socket.send(json.dumps({"setup": {"model": f"models/{model}",
                                                 "input_audio_transcription": {}}}))
@@ -190,6 +197,7 @@ async def stream(model: str, key: str, pcm: bytes, speed: float, speaker: str,
 
 
 def main() -> int:
+    private_files.private_umask()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("audio", type=Path)
     parser.add_argument("--out", type=Path, required=True)
@@ -199,17 +207,28 @@ def main() -> int:
                         help="実時間の何倍で流すか（1.0=実時間。会議中の挙動を見るなら 1.0）")
     parser.add_argument("--billing-project", required=True)
     parser.add_argument("--key-file", type=Path, required=True)
+    parser.add_argument("--config", type=Path, default=REPO / "config" / "settings.yaml",
+                        help="キーの出どころを確認する external_stt の設定")
     args = parser.parse_args()
 
-    ok, reason = billing_enabled(args.billing_project)
-    print(f"課金の関門: {'✓' if ok else '✗'} {reason}")
-    if not ok:
+    try:
+        settings = yaml.safe_load(args.config.read_text(encoding="utf-8")) or {}
+        external = ExternalSttConfig.from_mapping((settings.get("meeting") or {}).get("external_stt"))
+        if args.billing_project != external.billing_project:
+            raise ExternalSendRefused("指定したプロジェクトが external_stt.billing_project と一致しません")
+        key = require_gemini_audio_key(external, key_file=args.key_file)
+    except (ExternalSendRefused, OSError, ValueError) as refused:
+        print(f"Gemini へは送りません（{refused}）", file=sys.stderr)
         return 1
-    key = args.key_file.read_text(encoding="utf-8").strip().splitlines()[0].strip()
+    print("課金とキーの出どころの関門: ✓")
 
     pcm = load_pcm16(args.audio, SEND_RATE)
     print(f"{args.audio.name}: {len(pcm)/2/SEND_RATE/60:.1f} 分を {args.speed:g} 倍速で流します")
-    asyncio.run(stream(args.model, key, pcm, args.speed, args.speaker, args.out))
+    try:
+        asyncio.run(stream(args.model, key, pcm, args.speed, args.speaker, args.out))
+    except Exception as error:  # 接続例外の本文は認証情報を含みうる
+        print(f"接続失敗: {type(error).__name__}", file=sys.stderr)
+        return 1
     print(f"書き出し: {args.out}")
     return 0
 

@@ -88,10 +88,20 @@ class EventBus:
         self._latest: dict[str, Event] = {}
         self._subscriptions: set[Subscription] = set()
         self._seq = 0
+        self._status_warnings: list[str] = []
+
+    def retain_status_warning(self, message: str) -> None:
+        """会議の間残す警告を登録する。直接 publish する status にも引き継ぐ。"""
+        with self._lock:
+            if message not in self._status_warnings:
+                self._status_warnings.append(message)
 
     def publish(self, type: EventType, data: dict) -> Event:
         """イベントを採番して購読者へ配信する。"""
         with self._lock:
+            if type == "status" and self._status_warnings:
+                warnings = list(dict.fromkeys([*self._status_warnings, *data.get("warnings", [])]))
+                data = {**data, "warnings": warnings}
             self._seq += 1
             event = Event(type=type, seq=self._seq, at=time.time(), data=data)
             self._latest[type] = event

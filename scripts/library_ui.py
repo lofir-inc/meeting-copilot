@@ -29,6 +29,10 @@ sys.path.insert(0, str(REPO))
 from fastapi import FastAPI, Request  # noqa: E402
 from fastapi.responses import RedirectResponse  # noqa: E402
 
+from src import private_files
+
+from src.ui import guard
+
 from src.app.user_path import ensure_user_path  # noqa: E402
 from src.ui.library import Library, build_library_router, task_hub_pusher  # noqa: E402
 
@@ -47,6 +51,7 @@ def port_in_use(host: str, port: int) -> bool:
 
 
 def main() -> int:
+    private_files.private_umask()
     ensure_user_path()  # launchd から起こされる。仕上げ・議事録が ffmpeg / claude を探せるように
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--session")
@@ -59,13 +64,20 @@ def main() -> int:
     args = parser.parse_args()
 
     host = "127.0.0.1"
+    guard.require_loopback(host)
+    if port_in_use(host, args.port) and guard.probe(args.port, host=host) != "library":
+        args.port = next((p for p in range(8776, 8796) if not port_in_use(host, p)), None)
+        if args.port is None:
+            raise RuntimeError("会議アシスタント用の空きポートがありません")
     query = urlencode({key: value for key, value in (("tab", args.tab), ("session", args.session)) if value})
     url = f"http://{host}:{args.port}/library?{query}"
     if port_in_use(host, args.port):
+        if guard.probe(args.port, host=host) != "library":
+            return 1
         # もう開いている（前の会議のあとに開いたまま等）。二つ目は立てず、そちらを開く
         if not args.no_browser:
-            webbrowser.open(url)
-        print(f"既に開いています: {url}")
+            webbrowser.open(guard.browser_url(url))
+        print(f"既に開いています: {guard.browser_url(url)}")
         return 0
 
     settings = lambda: load_settings(args.config)  # noqa: E731 — 画面を開くたびに読み直す（設定を直しても再起動不要）
@@ -83,7 +95,7 @@ def main() -> int:
     def root() -> RedirectResponse:
         return RedirectResponse("/library")
 
-    server = uvicorn.Server(uvicorn.Config(app, host=host, port=args.port, log_level="warning"))
+    server = uvicorn.Server(guard.ServerConfig(app, host=host, port=args.port, kind="library", log_level="warning"))
 
     def close_when_idle() -> None:
         while not server.should_exit:
@@ -94,8 +106,8 @@ def main() -> int:
 
     threading.Thread(target=close_when_idle, daemon=True).start()
     if not args.no_browser:
-        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-    print(f"会議アシスタント: {url}（{args.idle_min:.0f} 分触らなければ閉じます）")
+        threading.Timer(1.0, lambda: webbrowser.open(guard.browser_url(url))).start()
+    print(f"会議アシスタント: {guard.browser_url(url)}（{args.idle_min:.0f} 分触らなければ閉じます）")
     server.run()
     return 0
 

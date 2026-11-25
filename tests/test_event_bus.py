@@ -55,6 +55,33 @@ def test_latest_returns_last_event_for_type() -> None:
     assert bus.latest("missing") is None
 
 
+def test_retained_warnings_survive_all_status_payloads_and_reconnects() -> None:
+    bus = EventBus()
+    refusal = "Gemini の課金を確かめられません"
+    bus.retain_status_warning(refusal)
+    bus.retain_status_warning(refusal)
+    bus.retain_status_warning("裏取りも行いません")
+    retained = [refusal, "裏取りも行いません"]
+    bus.publish("status", {"phase": "starting"})
+    subscription = bus.subscribe()
+    payloads = [
+        {"phase": "running", "warnings": []},
+        {"phase": "beep_selftest", "ok": True},
+        {"phase": "running", "warnings": [refusal, "一時的な警告"]},
+        {"phase": "stopping", "warnings": []},
+    ]
+    for payload in payloads:
+        original = dict(payload)
+        event = bus.publish("status", payload)
+        expected = retained + (["一時的な警告"] if "一時的な警告" in payload.get("warnings", []) else [])
+        assert event.data["warnings"] == expected
+        assert subscription.get(0.01) == event
+        assert bus.latest("status") == event
+        assert payload == original
+    assert "warnings" not in bus.publish("metrics", {"value": 1}).data
+    assert EventBus().publish("status", {"warnings": []}).data["warnings"] == []
+
+
 def test_closed_subscription_receives_nothing() -> None:
     """close 済み購読者は以後のイベントを受け取らない。"""
     bus = EventBus()

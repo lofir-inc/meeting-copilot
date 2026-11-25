@@ -38,6 +38,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from replay_meeting import decode_audio, replay  # noqa: E402
 
+from src import private_files
+
 from src.audio import ffmpeg  # noqa: E402
 from src.audio.vad import ChunkBuilder, VadConfig  # noqa: E402
 from src.audio.turn_splitter import TurnSplitConfig  # noqa: E402
@@ -51,13 +53,15 @@ from src.text.terms import load_terms  # noqa: E402
 from src.text import task_hub_dictionary  # noqa: E402
 from src.text.aizuchi import mark_rows  # noqa: E402
 from src.audio.segment_labeler import label_segments  # noqa: E402
-from src.stt.gemini_transcribe import TranscribeApi, TranscribeConfig, load_key  # noqa: E402
+from src.stt.gemini_transcribe import TranscribeApi, TranscribeConfig  # noqa: E402
 from src.meeting_orchestrator import RENAMES_FILE  # noqa: E402
 from src.stt.live_batch import GAPS_FILE  # noqa: E402
 from src.stt.external_consent import (  # noqa: E402
     ExternalSendRefused,
     ExternalSttConfig,
     approve,
+    log_text_refusal,
+    require_gemini_audio_key,
     record_send,
 )
 
@@ -110,6 +114,7 @@ def transcribe_external(
     sample_rate: int,
     diarizer,
     approved: bool = False,
+    config_path: Path = REPO / "config" / "settings.yaml",
 ) -> list[dict]:
     """外（Gemini）に文字起こしさせ、話者の割り当ては手元で行う。
 
@@ -119,14 +124,21 @@ def transcribe_external(
     files = [path for path in (remote_path, self_path) if path.exists()]
     # `approved` は、呼び出し側（会議の画面）で人が答えた直後にだけ立つ。
     #   立っていても課金の確認と送信の記録はそのまま通る（関門を飛ばすのは「聞く」ところだけ）。
-    approval = approve(cfg, session, files, ask=(lambda prompt: True) if approved else None)
+    cfg.text_billing()
+    try:
+        approval = approve(cfg, session, files, ask=(lambda prompt: True) if approved else None)
+        require_gemini_audio_key(cfg)
+    except ExternalSendRefused as refused:
+        log_text_refusal(session, str(refused))
+        raise
     record_send(session, approval, model=cfg.model, note="finalize_meeting")
 
     script = REPO / "scripts" / "gemini_transcribe.py"
 
     def run(audio: Path, out: Path, speaker: str | None) -> list[dict]:
         argv = [sys.executable, str(script), str(audio), "--out", str(out),
-                "--model", cfg.model, "--billing-project", cfg.billing_project]
+                "--model", cfg.model, "--billing-project", cfg.billing_project,
+                "--config", str(config_path)]
         if cfg.key_file:
             argv += ["--key-file", cfg.key_file]
         if speaker:
@@ -227,10 +239,16 @@ def pick_up_gaps_external(session: Path, gaps: list[dict], cfg: ExternalSttConfi
                           audios: dict, self_name: str, *, approved: bool) -> list[dict]:
     """外へ送れなかった区間だけを、もう一度外へ投げる。関門はここでも通す。"""
     files = [session / "recording_remote.wav", session / "recording_self.wav"]
-    approval = approve(cfg, session, [path for path in files if path.exists()],
-                       ask=(lambda prompt: True) if approved else None)
+    cfg.text_billing()
+    try:
+        approval = approve(cfg, session, [path for path in files if path.exists()],
+                           ask=(lambda prompt: True) if approved else None)
+        key = require_gemini_audio_key(cfg)
+    except ExternalSendRefused as refused:
+        log_text_refusal(session, f"外での拾い直しは行いません（{refused}）")
+        raise
     record_send(session, approval, model=cfg.model, note="finalize_gaps")
-    api = TranscribeApi(load_key(cfg.key_file),
+    api = TranscribeApi(key,
                         TranscribeConfig(model=cfg.model, timeout_sec=cfg.timeout_sec))
     rows: list[dict] = []
     for gap in gaps:
@@ -275,6 +293,7 @@ def pick_up_gaps_locally(gaps: list[dict], sample_rate: int, audios: dict, vad_c
 
 
 def main() -> int:
+    private_files.private_umask()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("session", type=Path, help="セッションディレクトリ")
     parser.add_argument("--config", type=Path, default=REPO / "config" / "settings.yaml")
@@ -394,7 +413,7 @@ def main() -> int:
         try:
             rows = transcribe_external(session, remote_path, self_path, self_name,
                                        external_cfg, sample_rate, diarizer,
-                                       approved=args.approved_in_ui)
+                                       approved=args.approved_in_ui, config_path=args.config)
             glossary_path = external_cfg.glossary_path or glossary_path
         except ExternalSendRefused as refused:
             print(f"\n  外へは出しません（{refused}）。手元の文字起こしで作り直します。")

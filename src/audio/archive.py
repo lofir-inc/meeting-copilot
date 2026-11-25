@@ -106,7 +106,8 @@ def drop_wav(session_dir: Path, trash_dir: Path) -> list[Path]:
     if missing:
         raise RuntimeError(f"mp3 がまだありません（{'・'.join(missing)}）。先に圧縮してください")
     target = trash_dir / f"{datetime.now(JST):%Y-%m-%d}_{session_dir.name}-wav"
-    target.mkdir(parents=True, exist_ok=True)
+    target.mkdir(mode=0o700, parents=True, exist_ok=True)
+    target.chmod(0o700)
     moved = []
     for key in present:
         source = session_dir / SOURCES[key]

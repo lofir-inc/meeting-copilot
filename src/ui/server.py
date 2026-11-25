@@ -17,6 +17,8 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
+from src.ui import guard
+
 from src.ui.bus import EventBus
 
 logger = logging.getLogger(__name__)
@@ -466,7 +468,7 @@ def ensure_port_free(host: str, port: int) -> None:
     """
     import socket
 
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe = socket.socket(socket.AF_INET6 if host == "::1" else socket.AF_INET, socket.SOCK_STREAM)
     try:
         probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         probe.bind((host, port))
@@ -490,6 +492,7 @@ def start_ui_server(app: FastAPI, cfg: UiConfig) -> threading.Thread:
     プレビュー用サーバーが 8765 を掴んでいて会議を始められなかった）。会議は待ってくれないので、
     画面のポートごときで止めない。どうしても空きが無いときだけ PortInUse。
     """
+    guard.require_loopback(cfg.host)
     last: PortInUse | None = None
     for offset in range(PORT_TRIES):
         port = cfg.port + offset
@@ -498,7 +501,8 @@ def start_ui_server(app: FastAPI, cfg: UiConfig) -> threading.Thread:
         except PortInUse as exc:
             last = exc
             continue
-        server = uvicorn.Server(uvicorn.Config(app, host=cfg.host, port=port, log_level="warning"))
+        protected = guard.protect(app, port=port, kind="meeting")
+        server = uvicorn.Server(uvicorn.Config(protected, host=cfg.host, port=port, log_level="warning"))
         thread = threading.Thread(target=server.run, name="meeting-ui", daemon=True)
         setattr(thread, "server", server)
         setattr(thread, "port", port)

@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -23,9 +25,12 @@ import wave
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
 SESSIONS = REPO / "workspace" / "sessions"
 LINKED = ("recording_remote.wav", "recording_self.wav")
 COPIED = ("speakers.json", "corrections.jsonl")
+
+from src import private_files
 
 
 def minutes(path: Path) -> float:
@@ -51,7 +56,7 @@ def choose(candidates: list[Path]) -> Path | None:
 def prepare(source: Path) -> Path:
     """録音をリンクした作業用セッションを作る（元は触らない）。"""
     work = SESSIONS / f"{source.name}-gemini"
-    work.mkdir(parents=True, exist_ok=True)
+    private_files.make_session_directory(work)
     for name in LINKED:
         origin = source / name
         link = work / name
@@ -62,11 +67,16 @@ def prepare(source: Path) -> Path:
     for name in COPIED:
         origin = source / name
         if origin.exists() and not (work / name).exists():
-            shutil.copy2(origin, work / name)
+            timestamps = origin.stat()
+            with origin.open("rb") as source_file, private_files.private_writer(work / name, binary=True) as destination:
+                shutil.copyfileobj(source_file, destination)
+            os.utime(work / name, ns=(timestamps.st_atime_ns, timestamps.st_mtime_ns))
     return work
 
 
 def main() -> int:
+    argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter).parse_args()
+    private_files.private_umask()
     candidates = sorted(path for path in SESSIONS.iterdir()
                         if path.is_dir() and (path / "recording_remote.wav").exists())
     if not candidates:

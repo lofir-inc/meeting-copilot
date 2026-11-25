@@ -171,11 +171,12 @@ class VoiceLibrary:
         if name not in self.people:
             raise KeyError(f"台帳にいません: {name}")
         trash_dir = Path(trash_dir)
-        trash_dir.mkdir(parents=True, exist_ok=True)
+        trash_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        trash_dir.chmod(0o700)
         stamp = datetime.now(JST).strftime("%Y%m%d-%H%M%S")
         target = trash_dir / f"voice-{stamp}-{_safe(name)}.json"
-        target.write_text(json.dumps({"name": name, "entries": self.people[name]}, ensure_ascii=False),
-                          encoding="utf-8")
+        with private_files.private_writer(target) as handle:
+            json.dump({"name": name, "entries": self.people[name]}, handle, ensure_ascii=False)
         del self.people[name]
         self._refresh()
         return target
@@ -184,12 +185,15 @@ class VoiceLibrary:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"version": 1, "people": self.people}
         temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        with private_files.private_writer(temporary) as handle:
+            json.dump(payload, handle, ensure_ascii=False)
         temporary.replace(self.path)
         try:
             self.path.chmod(0o600)   # 声紋は自分だけが読める状態にする
         except OSError:
             pass
+
+from src import private_files
 
 
 def voices_from_session(

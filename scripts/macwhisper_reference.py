@@ -16,6 +16,7 @@ MacWhisper 起動中は DB が書き込み中なので、コピーしてから�
 
 from __future__ import annotations
 
+from contextlib import closing, contextmanager
 import argparse
 import json
 import shutil
@@ -31,6 +32,9 @@ import numpy as np
 
 DB_DIR = Path.home() / "Library/Application Support/MacWhisper/Database"
 SR = 16000
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from src import private_files
 
 
 def _read_wav_16k_mono(path: Path) -> np.ndarray:
@@ -93,15 +97,20 @@ def find_offset(ours: np.ndarray, reference: np.ndarray, probes: int = 6, window
     return median(cluster), median(scores)
 
 
-def _copy_db() -> Path:
-    """書き込み中の DB をコピーして読み取り用のパスを返す。"""
-    temp_dir = Path(tempfile.mkdtemp(prefix="macwhisper-db-"))
-    for path in DB_DIR.glob("main.sqlite*"):
-        shutil.copy2(path, temp_dir / path.name)
-    copied = temp_dir / "main.sqlite"
-    if not copied.exists():
-        raise SystemExit(f"MacWhisper の DB が見つかりません: {DB_DIR}")
-    return copied
+@contextmanager
+def _copy_db():
+    """読み終わるまで DB コピーを保持し、失敗したときも削除する。"""
+    with tempfile.TemporaryDirectory(prefix="macwhisper-db-") as directory:
+        temp_dir = Path(directory)
+        for path in DB_DIR.glob("main.sqlite*"):
+            target = temp_dir / path.name
+            # copy2 would also copy the source's possibly public permissions.
+            with path.open("rb") as source, private_files.private_writer(target, binary=True) as dest:
+                shutil.copyfileobj(source, dest)
+        copied = temp_dir / "main.sqlite"
+        if not copied.exists():
+            raise SystemExit(f"MacWhisper の DB が見つかりません: {DB_DIR}")
+        yield copied
 
 
 def latest_session(db: sqlite3.Connection, on_date: str | None) -> tuple[bytes, str, str]:
@@ -133,6 +142,7 @@ def media_for(meeting_id: bytes, kind: str) -> Path:
 
 
 def main() -> int:
+    private_files.private_umask()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--recording", type=Path, required=True, help="こちらの録音（recording_remote.wav など）")
     parser.add_argument("--out", type=Path, required=True, help="書き出す正解 JSONL")
@@ -140,23 +150,22 @@ def main() -> int:
     parser.add_argument("--kind", choices=["app-audio", "mic-audio"], default="app-audio", help="時刻合わせに使う MacWhisper 側の音声")
     args = parser.parse_args()
 
-    db_path = _copy_db()
-    db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    session_id, date, meeting_id = latest_session(db, args.date)
-    print(f"MacWhisper の会議: {date} (UTC)")
+    with _copy_db() as db_path, closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as db:
+        session_id, date, meeting_id = latest_session(db, args.date)
+        print(f"MacWhisper の会議: {date} (UTC)")
 
-    print("  時刻を合わせています…")
-    offset, score = find_offset(_read_wav_16k_mono(args.recording), _read_wav_16k_mono(media_for(meeting_id, args.kind)))
-    print(f"  こちらの録音は MacWhisper の {offset:.3f} 秒目から（相関 {score:.3f}）")
+        print("  時刻を合わせています…")
+        offset, score = find_offset(_read_wav_16k_mono(args.recording), _read_wav_16k_mono(media_for(meeting_id, args.kind)))
+        print(f"  こちらの録音は MacWhisper の {offset:.3f} 秒目から（相関 {score:.3f}）")
 
-    rows = db.execute(
-        """
-        select t.start, t.end, t.text, sp.name from transcriptline t
-        left join speaker sp on sp.id = t.speakerID
-        where t.sessionId = ? order by t.start
-        """,
-        (session_id,),
-    ).fetchall()
+        rows = db.execute(
+            """
+            select t.start, t.end, t.text, sp.name from transcriptline t
+            left join speaker sp on sp.id = t.speakerID
+            where t.sessionId = ? order by t.start
+            """,
+            (session_id,),
+        ).fetchall()
     args.out.parent.mkdir(parents=True, exist_ok=True)
     written = 0
     with args.out.open("w", encoding="utf-8") as handle:

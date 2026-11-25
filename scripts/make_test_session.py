@@ -31,6 +31,7 @@ import numpy as np
 import soundfile as sf
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
 SAMPLE_RATE = 48000
 
 # (声, 台本)。声を分けるのは、手元の話者割り当てが効くかを見るため。
@@ -59,6 +60,8 @@ GAP_SEC = 1.5
 同じ発話としてつなぐので、24 秒ぜんぶが **1 発話** になり、話者の割り当ても相づちの印も
 試せなかった。実際の会議はもっと間が空く（09-11 の 50 分で 565 区間）。
 """
+
+from src import private_files
 
 
 def installed_voices() -> set[str]:
@@ -109,12 +112,13 @@ def synthesize(lines: list[tuple[str, str]], out_path: Path, tmp: Path) -> float
 
 
 def main() -> int:
+    private_files.private_umask()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--name", default="selftest-external")
     args = parser.parse_args()
 
     session = REPO / "workspace" / "sessions" / args.name
-    session.mkdir(parents=True, exist_ok=True)
+    private_files.make_session_directory(session)
     tmp = session / "_tmp"
     tmp.mkdir(exist_ok=True)
 

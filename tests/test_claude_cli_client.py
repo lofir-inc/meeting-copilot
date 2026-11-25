@@ -23,7 +23,8 @@ def test_final_pass_validates_cli_json(monkeypatch):
     monkeypatch.setattr("src.llm.claude_cli_client.subprocess.run", lambda command, **kwargs: received.update(command=command, **kwargs) or SimpleNamespace(returncode=0, stdout=json.dumps({"result": json.dumps(_delta())}), stderr=""))
     result = ClaudeCliClient(model="test").final_pass(MeetingState(), "発話", "system")
     assert result.summary == "要約"
-    assert received["command"] == ["claude", "-p", "--output-format", "json", "--model", "test"]
+    assert received["command"] == ["claude", "-p", "--output-format", "json", "--tools", "",
+                                    "--strict-mcp-config", "--model", "test"]
 
 
 class TestExtractJson:

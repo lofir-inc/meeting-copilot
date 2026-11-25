@@ -23,6 +23,8 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from src.ui import guard
+
 from src import capability, clients, finish, settings_edit
 from src.app import meeting_launch
 from src.audio import archive
@@ -298,10 +300,12 @@ class Library:
     def _ask_status(url: str) -> dict:
         """その口が会議の画面かを聞く。会議でなければ空を返す（例外にしない）。"""
         import urllib.error
-        import urllib.request
+        from urllib.parse import urlsplit
 
         try:
-            with urllib.request.urlopen(f"{url}api/status", timeout=0.4) as response:
+            parts = urlsplit(url)
+            with guard.verified_open(parts.port, "/api/status", host=parts.hostname,
+                                     kind="meeting", timeout=0.4) as response:
                 payload = json.loads(response.read().decode("utf-8"))
         except (urllib.error.URLError, OSError, json.JSONDecodeError, TimeoutError, ValueError):
             return {}
@@ -351,7 +355,8 @@ class Library:
         if not sessions:
             raise ValueError("消す会議が選ばれていません")
         trash = self.trash / f"{datetime.now(JST):%Y-%m-%d}_sessions"
-        trash.mkdir(parents=True, exist_ok=True)
+        trash.mkdir(mode=0o700, parents=True, exist_ok=True)
+        trash.chmod(0o700)
         moved = []
         for name in sessions:
             session_dir = self._session(name)

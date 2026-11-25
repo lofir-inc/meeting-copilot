@@ -11,6 +11,8 @@ from pathlib import Path
 
 import yaml
 
+from src import private_files
+
 from src.app.user_path import ensure_user_path
 from src.audio import ffmpeg
 from src.orchestrator import Orchestrator
@@ -75,7 +77,7 @@ def setup_session(session_dir: Path, prep_dir: Path | None) -> None:
     `prep_dir` が None なら**何もコピーしない**（会議モードの既定＝毎回リセット）。
     資料は画面から足す（`MeetingOrchestrator.attach_prep`）。
     """
-    session_dir.mkdir(parents=True, exist_ok=True)
+    private_files.make_session_directory(session_dir)
     session_prep = session_dir / "prep"
     session_prep.mkdir(exist_ok=True)
     if prep_dir is None:
@@ -88,6 +90,7 @@ def setup_session(session_dir: Path, prep_dir: Path | None) -> None:
 
 
 def main() -> None:
+    private_files.private_umask()
     ensure_user_path()  # .app・launchd から起こされても claude / ollama / ffmpeg が見える
     parser = argparse.ArgumentParser(description="ニアリアルタイム・インタビュー支援システム")
     parser.add_argument(

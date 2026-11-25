@@ -34,6 +34,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import logging
 import sys
 import time
 import unicodedata
@@ -50,6 +52,8 @@ PRICES = {                      # 1 音声時間あたりの目安（円・要�
     "gemini": 83.0,             # 2026-09-17 の実測（文字起こし＋要約の合計 ¥1.39/分）のうち音声ぶん
     "deepgram": 39.0,           # 公表価格からの換算（未検証）
 }
+
+from src import private_files
 
 
 def read_key(name: str) -> str:
@@ -79,7 +83,12 @@ def refuse_real_meetings(audio: Path, engine: str) -> None:
     if engine == "local":
         return
     resolved = audio.resolve()
-    if (REPO / "workspace" / "sessions").resolve() in resolved.parents:
+    candidates = {audio.absolute(), resolved}
+    recording = re.compile(r"^(?:recording_.*|meeting|self|remote)\.(?:wav|mp3|m4a)(?:\.age)?$", re.I)
+    if any((REPO / "workspace" / "sessions").resolve() in candidate.parents
+           or recording.fullmatch(candidate.name)
+           or any((parent / ".encryption.json").exists() or (parent / "session.json.age").exists() or (parent / "transcripts.jsonl.age").exists() for parent in candidate.parents)
+           for candidate in candidates):
         raise SystemExit(
             f"実会議の音声は外へ出せません: {resolved}\n"
             "  比較は公開データで行ってください（勝ったエンジンだけ、承認を得て実会議にかける）。")
@@ -114,8 +123,17 @@ def run_local(audio: Path) -> str:
 def run_gemini(audio: Path) -> str:
     """Gemini の文字起こし（音声を外へ出す）。"""
     from src.stt.gemini_transcribe import TranscribeApi, TranscribeConfig
+    from src.stt.external_consent import ExternalSendRefused, ExternalSttConfig, require_gemini_audio_key
+    import yaml
 
-    api = TranscribeApi(read_key("gemini"), TranscribeConfig())
+    settings = yaml.safe_load((REPO / "config" / "settings.yaml").read_text(encoding="utf-8")) or {}
+    external = ExternalSttConfig.from_mapping((settings.get("meeting") or {}).get("external_stt"))
+    try:
+        key = require_gemini_audio_key(external, key_file=_key_path("gemini"))
+    except ExternalSendRefused as refused:
+        logging.getLogger(__name__).warning("%s", refused)
+        raise
+    api = TranscribeApi(key, TranscribeConfig())
     result = api.transcribe_file(audio)
     return "".join(str(one.get("text", "")) for one in (result.get("utterances") or []))
 
@@ -127,7 +145,8 @@ def run_deepgram(audio: Path) -> str:
     with httpx.Client(timeout=300) as client:
         response = client.post(
             "https://api.deepgram.com/v1/listen",
-            params={"model": "nova-3", "language": "ja", "smart_format": "true"},
+            params={"model": "nova-3", "language": "ja", "smart_format": "true",
+                    "mip_opt_out": "true"},
             headers={"Authorization": f"Token {read_key('deepgram')}",
                      "Content-Type": "audio/wav"},
             content=audio.read_bytes())
@@ -213,6 +232,7 @@ def audio_seconds(audio: Path) -> float:
 
 
 def main() -> int:
+    private_files.private_umask()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--audio", type=Path, required=True)
     parser.add_argument("--reference", type=Path, required=True, help="正解のテキスト（読み上げた原稿など）")

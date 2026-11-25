@@ -8,13 +8,18 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import shutil
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import yaml
+
+from src import private_files
 
 JST = ZoneInfo("Asia/Tokyo")
 SECTION = "task_hub"
@@ -84,14 +89,42 @@ def set_persona(path: Path, speaker: str, persona: str | list, *,
         if names:
             kept.append(entry)
         lines[start:end] = kept
-    path.write_text("".join(lines), encoding="utf-8")
-    yaml.safe_load(path.read_text(encoding="utf-8"))   # 壊れた YAML を残さない
+    def check(data):
+        table = (data.get(SECTION) or {}).get(KEY) or {}
+        expected = names[0] if len(names) == 1 else names
+        if (names and table.get(speaker) != expected) or (not names and speaker in table):
+            raise ValueError("ペルソナの保存値が一致しません")
+
+    _write_validated(path, lines, check)
     return read_personas(path)
 
 
 def _quote(value: str) -> str:
     """YAML に置ける形にする（記号や空白を含む名前でも壊さない）。"""
-    return value if re.fullmatch(r"[\w一-龥ぁ-んァ-ヶー々〆〤]+", value) else '"' + value.replace('"', '\\"') + '"'
+    if re.fullmatch(r"[\w一-龥ぁ-んァ-ヶー々〆〤]+", value) and yaml.safe_load(value) == value:
+        return value
+    # JSON のダブルクォート文字列は YAML でも有効。バックスラッシュ・制御文字も逃がす。
+    quoted = json.dumps(value, ensure_ascii=False)
+    # YAML で改行扱いになる文字と、直接置けない制御文字を逃がす。
+    return "".join(f"\\u{ord(char):04x}"
+                   if 0x7f <= ord(char) <= 0x9f or char in "\u2028\u2029"
+                   else char for char in quoted)
+
+
+def _write_validated(path: Path, lines: list[str], check) -> None:
+    text = "".join(lines)
+    check(yaml.safe_load(text))
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    os.close(descriptor)
+    temporary = Path(name)
+    try:
+        with private_files.private_writer(temporary) as handle:
+            handle.write(text)
+        check(yaml.safe_load(temporary.read_text(encoding="utf-8")))
+        os.replace(temporary, path)
+        check(yaml.safe_load(path.read_text(encoding="utf-8")))
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _section_line(lines: list[str]) -> int | None:
@@ -124,17 +157,22 @@ def _bounds(lines: list[str]) -> tuple[int | None, int]:
 
 def _line_speaker(line: str) -> str | None:
     """`    自分: 自社社長` の行から話者名を取る（コメント行は None）。"""
-    match = re.match(r'^\s{4,}(?:"([^"]+)"|\'([^\']+)\'|([^:#\s][^:#]*?))\s*:', line)
-    if not match:
+    if not line.startswith("    ") or line.lstrip().startswith("#"):
         return None
-    return (match.group(1) or match.group(2) or match.group(3) or "").strip()
+    try:
+        entry = yaml.safe_load(line)
+    except yaml.YAMLError:
+        return None
+    return str(next(iter(entry))) if isinstance(entry, dict) and len(entry) == 1 else None
 
 
 def _backup(path: Path, trash_dir: Path) -> Path:
     """直す前の設定を退避する（直接上書きしない）。"""
-    trash_dir.mkdir(parents=True, exist_ok=True)
+    trash_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    trash_dir.chmod(0o700)
     target = trash_dir / f"{datetime.now(JST):%Y-%m-%d_%H%M%S}_{path.name}"
-    shutil.copy2(path, target)
+    with path.open("rb") as source, private_files.private_writer(target, binary=True) as destination:
+        shutil.copyfileobj(source, destination)
     return target
 
 
@@ -254,8 +292,16 @@ def set_value(path: Path, key: str, value, *, trash_dir: Path | None = None):
     # コメントの桁をそろえたまま書き戻す（読みやすさが設定ファイルの価値の半分）
     lines[index] = (body.ljust(at) + comment if at > len(body) else
                     f"{body}  {comment}" if comment else body) + "\n"
-    path.write_text("".join(lines), encoding="utf-8")
-    yaml.safe_load(path.read_text(encoding="utf-8"))     # 壊れた YAML を残さない
+    expected = str(value) if field_["kind"] == "text" else yaml.safe_load(written)
+
+    def check(data):
+        current = data
+        for part in key.split("."):
+            current = current[part]
+        if current != expected:
+            raise ValueError("設定の保存値が一致しません")
+
+    _write_validated(path, lines, check)
     return next((one["value"] for one in read_fields(path) if one["key"] == key), None)
 
 
@@ -267,10 +313,10 @@ def _as_yaml(field_: dict, value) -> str:
     if kind == "number":
         number = float(value)
         return str(int(number)) if number == int(number) else str(number)
-    text = str(value).strip()
+    text = str(value) if kind == "text" else str(value).strip()
     if kind == "choice" and text not in (field_.get("choices") or []):
         raise ValueError(f"選べるのは {'／'.join(field_.get('choices') or [])} です")
-    if not text:
+    if not text.strip():
         raise ValueError("値を入れてください")
     return _quote(text)
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +24,8 @@ import yaml
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "scripts"))
+
+from src import private_files
 
 from src import clients, finish  # noqa: E402
 from src.audio import ffmpeg  # noqa: E402
@@ -71,12 +74,38 @@ def build_candidates(session: Path, settings: dict) -> bool:
     return True
 
 
+def minutes_send_approved(session: Path, settings: dict) -> bool:
+    """今の設定と同じ Google のプロジェクト宛ての議事録送信承認だけを認める。"""
+    configured_project = ((settings.get("meeting") or {}).get("external_stt") or {}).get("billing_project")
+    if not configured_project:
+        return False
+    sends = session / "external_sends.jsonl"
+    try:
+        lines = sends.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return False
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        purposes = entry.get("purposes")
+        project = entry.get("billing_project")
+        if (isinstance(purposes, list) and "minutes" in purposes
+                and isinstance(project, str)
+                and project == configured_project
+                and project not in {"deepgram", "gemini", "google", "openai", "anthropic", "azure"}
+                and re.fullmatch(r"[a-z][a-z0-9-]{4,28}[a-z0-9]", project)):
+            return True
+    return False
+
+
 def make_minutes(session: Path, settings: dict) -> bool:
     """議事録を作る。外（Gemini）へ出すかは、その会議で承認したかで決まる。"""
     argv = [PYTHON, str(REPO / "scripts" / "make_minutes.py"), str(session)]
-    sends = session / "external_sends.jsonl"
-    approved = sends.exists() and any('"note": "live_batch"' in line or '"note": "state"' in line
-                                      for line in sends.read_text(encoding="utf-8").splitlines())
+    approved = minutes_send_approved(session, settings)
     argv.append("--approved-external" if approved else "--no-external")
     return subprocess.run(argv, check=False).returncode == 0
 
@@ -106,6 +135,7 @@ RUNNERS = {"finalize": run_finalize, "voices": learn_voices,
 
 
 def main() -> int:
+    private_files.private_umask()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("session", type=Path)
     parser.add_argument("--only", choices=list(RUNNERS), action="append",

@@ -25,7 +25,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from src.stt.external_consent import ExternalSttConfig, billing_enabled  # noqa: E402
+from src.stt.external_consent import (  # noqa: E402
+    ExternalSendRefused, ExternalSttConfig, require_gemini_audio_key,
+)
 
 HOST = "generativelanguage.googleapis.com"
 PATH = "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
@@ -67,7 +69,7 @@ def setup_variants(model: str) -> list[tuple[str, dict]]:
 async def probe(model: str, key: str, audio: Path, seconds: float, realtime: bool) -> int:
     import websockets
 
-    url = f"wss://{HOST}{PATH}?key={key}"
+    url = f"wss://{HOST}{PATH}"
     pcm = load_pcm16(audio, SEND_RATE)[: int(seconds * SEND_RATE) * 2]
     frame = int(FRAME_SEC * SEND_RATE) * 2
     print(f"音源 {audio.name} の先頭 {seconds:.0f} 秒 / {len(pcm)/2/SEND_RATE:.1f} 秒ぶんの PCM\n")
@@ -75,7 +77,8 @@ async def probe(model: str, key: str, audio: Path, seconds: float, realtime: boo
     for label, setup in setup_variants(model):
         print(f"── {label} ──")
         try:
-            async with websockets.connect(url, max_size=None, open_timeout=30) as socket:
+            async with websockets.connect(url, additional_headers={"x-goog-api-key": key},
+                                          max_size=None, open_timeout=30) as socket:
                 await socket.send(json.dumps(setup))
                 try:
                     first = await asyncio.wait_for(socket.recv(), timeout=20)
@@ -96,7 +99,7 @@ async def probe(model: str, key: str, audio: Path, seconds: float, realtime: boo
                             received.append(_short(message))
                             print(f"  [{time.perf_counter()-started:5.2f}s] {_short(message)}")
                     except Exception as error:   # noqa: BLE001
-                        print(f"  受信終了: {type(error).__name__} {str(error)[:90]}")
+                        print(f"  受信終了: {type(error).__name__} {str(error).replace(key, '[REDACTED]')[:90]}")
 
                 listener = asyncio.create_task(listen())
                 for index in range(0, len(pcm), frame):
@@ -112,7 +115,7 @@ async def probe(model: str, key: str, audio: Path, seconds: float, realtime: boo
                 if received:
                     return 0
         except Exception as error:   # noqa: BLE001
-            print(f"  つながりません: {type(error).__name__} {str(error)[:160]}\n")
+            print(f"  つながりません: {type(error).__name__} {str(error).replace(key, '[REDACTED]')[:160]}\n")
     return 1
 
 
@@ -132,13 +135,14 @@ def main() -> int:
 
     import yaml
 
-    settings = yaml.safe_load((REPO / "config" / "settings.yaml").read_text(encoding="utf-8")) or {}
-    config = ExternalSttConfig.from_mapping(settings.get("meeting", {}).get("external_stt"))
-    ok, reason = billing_enabled(config.billing_project)
-    print(f"課金の関門: {'✓' if ok else '✗'} {reason}")
-    if not ok:
+    try:
+        settings = yaml.safe_load((REPO / "config" / "settings.yaml").read_text(encoding="utf-8")) or {}
+        config = ExternalSttConfig.from_mapping((settings.get("meeting") or {}).get("external_stt"))
+        key = require_gemini_audio_key(config)
+    except (ExternalSendRefused, OSError, ValueError) as refused:
+        print(f"Gemini へは送りません（{refused}）", file=sys.stderr)
         return 1
-    key = Path(config.key_file).expanduser().read_text(encoding="utf-8").strip().splitlines()[0]
+    print("課金とキーの出どころの関門: ✓")
 
     if not args.audio.exists():
         raise SystemExit(f"音源がありません: {args.audio}（./scripts/make_test_session.py で作れます）")

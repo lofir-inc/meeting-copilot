@@ -108,6 +108,11 @@ def add_candidates(shared_dir: str | Path, client: str, pairs: list[tuple[str, s
         raise FileNotFoundError(f"タスク管理 の辞書の道具がありません: {tool}")
     results = []
     for wrong, correct in pairs:
+        # --add は nargs=2。途中の -- は値として受け取られない。
+        if wrong.startswith("-") or correct.startswith("-"):
+            results.append({"status": "skipped", "wrong": wrong,
+                            "detail": "先頭が - の語は CLI オプションと区別できないため登録しません"})
+            continue
         run = subprocess.run(["python3", str(tool), "--client", client, "--add", wrong, correct],
                              capture_output=True, text=True, timeout=timeout_sec, check=False)
         try:

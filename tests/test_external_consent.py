@@ -15,7 +15,9 @@ from src.stt.external_consent import (
     SEND_LOG,
     approve,
     LOGIN_EXPIRED,
+    SessionBillingCheck,
     billing_enabled,
+    gemini_text_allowed,
     record_send,
 )
 
@@ -29,6 +31,159 @@ def _config(**overrides) -> ExternalSttConfig:
 def _paid(monkeypatch, enabled: bool = True, reason: str = "課金が有効です") -> None:
     monkeypatch.setattr("src.stt.external_consent.billing_enabled",
                         lambda project: (enabled, reason))
+
+
+class TestGeminiTextAllowed:
+    @pytest.fixture
+    def keys(self, tmp_path):
+        key = tmp_path / "gemini.key"
+        key.write_text("fake-key\n", encoding="utf-8")
+        return {"key_file": str(key)}, _config(provider="deepgram", key_file=str(key))
+
+    @pytest.mark.parametrize("result", ["paid", "unpaid", "error", "timeout", "missing", "permission"])
+    def test_Deepgramの承認と別にGoogleの課金を確かめる(self, keys, monkeypatch, result):
+        import subprocess
+
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append((command, kwargs))
+            if result == "timeout":
+                raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+            if result == "missing":
+                raise FileNotFoundError("gcloud")
+            if result == "permission":
+                raise PermissionError("gcloud")
+            return subprocess.CompletedProcess(command, 1 if result == "error" else 0,
+                                               stdout="True" if result == "paid" else "False", stderr="offline")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        decision = gemini_text_allowed(*keys, timeout_sec=0.25)
+        assert decision.allowed is (result == "paid")
+        assert decision.reason
+        assert calls[0][0] == ["gcloud", "billing", "projects", "describe", "your-gcp-project",
+                               "--format", "value(billingEnabled)"]
+        assert 0 < calls[0][1]["timeout"] <= 0.25
+
+    @pytest.mark.parametrize("bad", ["project", "different", "env", "missing", "empty", "directory"])
+    def test_出どころが不明なら環境変数があっても送らない(self, keys, tmp_path, monkeypatch, bad):
+        values, external = keys
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-env-key")
+        if bad == "project":
+            external.billing_project = ""
+        elif bad == "different":
+            other = tmp_path / "other.key"
+            other.write_text("fake-key\n", encoding="utf-8")
+            values["key_file"] = str(other)
+        elif bad == "env":
+            values.clear()
+        elif bad == "missing":
+            Path(values["key_file"]).unlink()
+        elif bad == "empty":
+            Path(values["key_file"]).write_text("\n", encoding="utf-8")
+        else:
+            values["key_file"] = external.key_file = str(tmp_path)
+
+        def unexpected(*args, **kwargs):
+            raise AssertionError("不明なキーで課金を問い合わせない")
+
+        monkeypatch.setattr("src.stt.external_consent.billing_enabled", unexpected)
+        decision = gemini_text_allowed(values, external, timeout_sec=1)
+        assert not decision.allowed and not decision.api_key
+        assert ("プロジェクト ID" if bad == "project" else "キーの出どころを確かめられません") in decision.reason
+
+    def test_expanduserと相対パスとsymlinkを実体で比べる(self, keys, tmp_path, monkeypatch):
+        values, external = keys
+        (tmp_path / "alias.key").symlink_to(values["key_file"])
+        monkeypatch.chdir(tmp_path)
+        import os
+        values["key_file"] = "~/" + os.path.relpath(tmp_path / "alias.key", Path.home())
+        external.key_file = "gemini.key"
+        monkeypatch.setattr("src.stt.external_consent.billing_enabled", lambda *a, **k: (True, "paid"))
+        assert gemini_text_allowed(values, external, timeout_sec=1).allowed
+
+    @pytest.mark.parametrize("paid", [True, False])
+    def test_成功も失敗も会議の間だけ共有する(self, keys, monkeypatch, paid):
+        from unittest.mock import Mock
+
+        check = Mock(return_value=(paid, "paid" if paid else "offline"))
+        monkeypatch.setattr("src.stt.external_consent.billing_enabled", check)
+        first = gemini_text_allowed(*keys)
+        # 二度目はファイルも課金も読まない。次の会議には同じ結果を持ち越さない。
+        Path(keys[0]["key_file"]).unlink()
+        assert gemini_text_allowed(*keys) is first
+        assert first.allowed is paid and check.call_count == 1
+        Path(keys[0]["key_file"]).write_text("fake-key", encoding="utf-8")
+        external = _config(provider="deepgram", key_file=keys[0]["key_file"])
+        check.return_value = (not paid, "next meeting")
+        assert gemini_text_allowed(keys[0], external).allowed is not paid
+        assert check.call_count == 2
+
+    def test_例外の結果も会議中は共有する(self, keys, monkeypatch):
+        from unittest.mock import Mock
+
+        check = Mock(side_effect=PermissionError("fake failure"))
+        monkeypatch.setattr("src.stt.external_consent.billing_enabled", check)
+        first = gemini_text_allowed(*keys)
+        assert not first.allowed and not first.api_key
+        assert gemini_text_allowed(*keys) is first
+        assert check.call_count == 1
+
+    def test_別の会議なら失敗後も確かめ直す(self, keys, monkeypatch):
+        results = iter([(False, "offline"), (True, "paid")])
+        monkeypatch.setattr("src.stt.external_consent.billing_enabled", lambda *a, **k: next(results))
+        assert not gemini_text_allowed(*keys, timeout_sec=1).allowed
+        external = _config(provider="deepgram", key_file=keys[0]["key_file"])
+        assert gemini_text_allowed(keys[0], external, timeout_sec=1).allowed
+
+
+class TestSessionBillingTimeout:
+    @pytest.mark.parametrize("spent", [14.0, 20.0, 21.0])
+    def test_認証を切り替えても確認全体で20秒を超えない(self, tmp_path, monkeypatch, spent):
+        import subprocess
+        from src.stt import external_consent as module
+
+        clock = [0.0]
+        monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+        credential = tmp_path / "billing.json"
+        credential.write_text("{}", encoding="utf-8")
+        monkeypatch.setenv("MEETING_BILLING_CREDENTIAL", str(credential))
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append(kwargs["timeout"])
+            if len(calls) == 1:
+                clock[0] += spent
+                return subprocess.CompletedProcess(command, 1, stdout="", stderr="offline")
+            clock[0] += kwargs["timeout"]
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+        monkeypatch.setattr(subprocess, "run", run)
+        check = SessionBillingCheck()
+        result = check.check("p", timeout_sec=100)
+        assert not result[0]
+        assert calls == ([20.0, 6.0] if spent == 14.0 else [20.0])
+        assert check.check("p") == result  # False も再問い合わせしない
+        assert len(calls) == (2 if spent == 14.0 else 1)
+
+    def test_期限後にTrueが返っても送らない(self, monkeypatch):
+        from src.stt import external_consent as module
+
+        clock = [0.0]
+        monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+
+        def late(*args, **kwargs):
+            clock[0] = 21.0
+            return True, "paid"
+
+        monkeypatch.setattr(module, "billing_enabled", late)
+        assert not SessionBillingCheck().check("p")[0]
+
+    def test_別のプロジェクトにTrueを使い回さない(self, monkeypatch):
+        monkeypatch.setattr("src.stt.external_consent.billing_enabled", lambda *a, **k: (True, "paid"))
+        check = SessionBillingCheck()
+        assert check.check("p")[0]
+        assert not check.check("different-project")[0]
 
 
 class TestApprove:
@@ -190,7 +345,7 @@ def test_短い待ち時間を渡せる(monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: seen.update(kwargs) or
                         subprocess.CompletedProcess(args, 0, stdout="True", stderr=""))
     assert billing_enabled("your-gcp-project", timeout_sec=20.0)[0] is True
-    assert seen["timeout"] == 20.0
+    assert 0 < seen["timeout"] <= 20.0
 
 
 class _Process:
@@ -291,3 +446,17 @@ def test_鍵が無ければ今までどおり(monkeypatch, tmp_path):
         args, 1, stdout="", stderr="Reauthentication failed."))
 
     assert billing_enabled("p")[1] == LOGIN_EXPIRED
+
+
+@pytest.mark.parametrize("note,purposes,expected", [
+    ("state", ["state", "prep", "minutes"], ["state", "prep", "minutes"]),
+    ("verify", None, ["verify"]),
+    ("", None, []),
+    ("state", [], []),
+])
+def test_record_send_purposes(tmp_path, note, purposes, expected):
+    import json
+
+    path = record_send(tmp_path, Approval(billing_project="fake-project"),
+                       model="m", note=note, purposes=purposes)
+    assert json.loads(path.read_text())["purposes"] == expected

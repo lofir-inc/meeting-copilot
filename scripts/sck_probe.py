@@ -17,6 +17,8 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+from src import private_files
+
 from src.audio.sck_capture import SckConfig, SckSystemAudio, has_screen_capture_permission, responsible_app_name
 
 logger = logging.getLogger(__name__)
@@ -53,6 +55,7 @@ def analyse(samples: np.ndarray, sample_rate: int) -> tuple[float, float | None]
 
 def main() -> int:
     """SCK を指定秒数だけ実行し、診断結果を出力する。"""
+    private_files.private_umask()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seconds", type=float, default=5.0)
     parser.add_argument("--tone", action="store_true")

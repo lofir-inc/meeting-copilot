@@ -8,17 +8,22 @@
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
+from src import private_files
+
 from src.app import menubar  # noqa: E402
 from src.app.user_path import ensure_user_path  # noqa: E402
 
 
 def main() -> int:
+    argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter).parse_args()
+    private_files.private_umask()
     ensure_user_path()  # launchd の PATH は /usr/bin:/bin だけ。会議・画面はここから PATH を継ぐ
     return menubar.run(REPO, Path(sys.executable))
 

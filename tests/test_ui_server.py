@@ -289,6 +289,23 @@ def test_empty_minutes_clears_the_schedule(tmp_path: Path) -> None:
     assert actions.planned is None
 
 
+def test_plan_and_finish_keep_external_refusal_warnings(tmp_path: Path) -> None:
+    client, bus, _ = create_client(tmp_path)
+    refusal = "Gemini の課金を確かめられません。手元で要約します"
+    bus.retain_status_warning(refusal)
+    bus.publish("status", {"phase": "running"})
+    subscription = bus.subscribe()
+
+    for endpoint, payload, phase in [("/api/plan", {"minutes": 60}, "running"),
+                                     ("/api/finish", {}, "stopping")]:
+        assert client.post(endpoint, json=payload).status_code == 200
+        event = subscription.get(0.5)
+        assert event.data["phase"] == phase
+        assert event.data["warnings"] == [refusal]
+        assert bus.latest("status").data["warnings"] == [refusal]
+        assert client.get("/api/status").json()["status"]["warnings"] == [refusal]
+
+
 def test_absurd_minutes_are_rejected(tmp_path: Path) -> None:
     client, _, actions = create_client(tmp_path)
 

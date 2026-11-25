@@ -23,6 +23,8 @@ import yaml
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
+from src import private_files
+
 from src.audio.enrolled_diarizer import EnrolledDiarizer  # noqa: E402
 from src.audio.voice_library import (  # noqa: E402
     MATCHES_FILE,
@@ -65,6 +67,7 @@ def rows_of(session: Path) -> list[dict]:
 
 
 def main() -> int:
+    private_files.private_umask()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", type=Path)
     sub = parser.add_subparsers(dest="command", required=True)

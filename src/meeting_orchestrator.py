@@ -53,6 +53,8 @@ from src.stt.external_consent import (
     login_and_wait,
     audio_minutes,
     billing_enabled,
+    gemini_text_allowed,
+    require_gemini_audio_key,
     record_send,
 )
 from src.stt.gemini_transcribe import TranscribeApi, TranscribeConfig, load_key
@@ -92,6 +94,7 @@ from src.text.terms import extract_terms, prompt_line, save_terms
 from src.text import task_hub_dictionary
 from src.ui.bus import EventBus
 from src.ui.server import PortInUse, UiConfig, build_app, start_ui_server
+from src.ui import guard
 
 logger = logging.getLogger(__name__)
 
@@ -467,6 +470,8 @@ class MeetingOrchestrator:
                 logger.info("声の台帳を読みました: %d 人", len(self._voices))
             except (OSError, ValueError) as error:
                 logger.warning("声の台帳を読めません（候補は出しません）: %s", error)
+        self._llm_approval = None
+        self._llm_approved_purposes: list[str] = []
         self._verify_gemini: GeminiClient | None = None
         """🔍 を Gemini で回すときの口（会議の承認が取れたときだけ作る）。"""
         self._verify_engine = str(self.meeting.verify_engine).lower()
@@ -705,9 +710,19 @@ class MeetingOrchestrator:
 
     def _start_gemini_verify(self, approval) -> bool:
         """🔍 を Gemini＋Google 検索で回す。承認は `_start_external_engines` で取り済み。"""
+        decision = gemini_text_allowed(self._llm_gemini, self._external_cfg,
+                                       timeout_sec=EXTERNAL_CHECK_TIMEOUT_SEC)
+        if not decision.allowed:
+            message = f"Gemini の課金を確かめられません（{decision.reason}）。Gemini での裏取りは行いません"
+            logger.warning("%s", message)
+            self._retain_status_warning(message)
+            if self._verifier.client is None:
+                self._verifier.disable(message)
+            return False
         known = set(GeminiLlmConfig.__dataclass_fields__)
         try:
-            client = GeminiClient(GeminiLlmConfig(**{k: v for k, v in self._llm_gemini.items() if k in known}))
+            client = GeminiClient(GeminiLlmConfig(**{k: v for k, v in self._llm_gemini.items() if k in known}),
+                                  verified_key=decision.api_key)
         except (ValueError, OSError) as error:
             self._verifier.disable(f"Gemini の用意ができません（{error}）")
             return False
@@ -838,7 +853,8 @@ class MeetingOrchestrator:
                     print(f"\n  ※ ポート {self._ui_cfg.port} が塞がっていたので、画面は "
                           f"http://{self._ui_cfg.host}:{self._ui_port}/ で開きます\n")
                 if self._ui_cfg.open_browser:
-                    webbrowser.open(f"http://{self._ui_cfg.host}:{self._ui_port}/")
+                    browser_host = "localhost" if self._ui_cfg.host == "::1" else self._ui_cfg.host
+                    webbrowser.open(guard.browser_url(f"http://{browser_host}:{self._ui_port}/"))
             except PortInUse as exc:
                 # 前のセッションが残っている。音声処理は続けるが、UI が「別のセッション」を見せる事故を防ぐため大きく出す
                 logger.error("%s", exc)
@@ -871,7 +887,7 @@ class MeetingOrchestrator:
 
         # 話者登録（相手側のみ）
         speakers_path = self.session_dir / "speakers.json"
-        self.bus.publish("status", {"phase": "enrolling", "warnings": []})
+        self._publish_status({"phase": "enrolling", "warnings": []})
         if self.meeting.skip_enrollment:
             from src.enrollment import load_or_create
 
@@ -909,7 +925,7 @@ class MeetingOrchestrator:
             self._factcheck_loop.start()
             logger.info("ファクトチェックを有効にしました（判定: %s）", self._factcheck_cfg.verify)
 
-        self.bus.publish("status", {"phase": "running", "warnings": []})
+        self._publish_status({"phase": "running", "warnings": []})
         logger.info("会議の記録を開始しました。")
 
         last_summary_time = time.time()
@@ -961,6 +977,8 @@ class MeetingOrchestrator:
         """
         wants = [name for name, engine in (("文字起こし", self._stt_engine), ("要約", self._llm_engine))
                  if engine in EXTERNAL_STT_ENGINES]
+        if self._wants_gemini_verify():
+            wants.append("裏取り")
         if not wants:
             return []                       # そもそも外へ出さない設定なので点検しない
         label = "・".join(wants)
@@ -979,12 +997,17 @@ class MeetingOrchestrator:
         if config.key_file and not Path(config.key_file).expanduser().exists():
             return [f"{label}を外で回す設定ですが、API キーのファイルがありません"
                     f"（{config.key_file}）。{fallback}"]
-        ok, reason = billing_enabled(config.billing_project, timeout_sec=EXTERNAL_CHECK_TIMEOUT_SEC)
-        if not ok and reason == LOGIN_EXPIRED and config.auto_login:
+        text_billing = self._llm_engine == "gemini" or self._wants_gemini_verify()
+        if text_billing:
+            decision = gemini_text_allowed(self._llm_gemini, config, timeout_sec=EXTERNAL_CHECK_TIMEOUT_SEC)
+            ok, reason = decision.allowed, decision.reason
+        else:
+            ok, reason = billing_enabled(config.billing_project, timeout_sec=EXTERNAL_CHECK_TIMEOUT_SEC)
+        if not text_billing and not ok and reason == LOGIN_EXPIRED and config.auto_login:
             # 端末で打たなくていいように、ログイン画面をこちらから開いて待つ（会議が始まる前に済ませる）
             def say(message: str) -> None:
                 print(f"\n  {message}")
-                self.bus.publish("status", {"phase": "starting", "warnings": [message]})
+                self._publish_status({"phase": "starting", "warnings": [message]})
             ok, reason = login_and_wait(config.billing_project, timeout_sec=config.login_timeout_sec, on_status=say)
         if not ok:
             return [f"{label}を外へ出す準備ができていません: {reason}。{fallback}"]
@@ -1478,7 +1501,7 @@ class MeetingOrchestrator:
             if not client.available():
                 return {"ok": False, "reason": "Claude CLI が見つかりません"}
             started = time.time()
-            self.bus.publish("status", {"phase": "reviewing", "warnings": [], "note": f"全文を見直しています（{reason}）"})
+            self._publish_status({"phase": "reviewing", "warnings": [], "note": f"全文を見直しています（{reason}）"})
             before = self._state_loop.state()
             transcripts = self._read_transcripts()
             delta = client.final_pass(before, self._format_transcript(transcripts), final_pass_prompt())
@@ -1488,7 +1511,7 @@ class MeetingOrchestrator:
             self.writer.write_state(state)
             self.writer.write_state_json(state)
             self.bus.publish("state", {"state": state.to_dict(), "latency_sec": time.time() - started, "parse_ok": True})
-            self.bus.publish("status", {"phase": "running", "warnings": [],
+            self._publish_status({"phase": "running", "warnings": [],
                                         "note": f"見直し完了（{reason}）: 決定 {len(state.decisions)} 件 / TODO {len(state.todos)} 件"})
             logger.info("見直し（%s）: %.0f 秒 / 変更 %d 件 / 決定 %d 件 / TODO %d 件",
                         reason, time.time() - started, len(changes), len(state.decisions), len(state.todos))
@@ -1496,7 +1519,7 @@ class MeetingOrchestrator:
                     "todos": len(state.todos), "seconds": round(time.time() - started, 1)}
         except Exception as exc:  # noqa: BLE001 — 会議を止めない
             logger.warning("見直しに失敗しました: %s", exc)
-            self.bus.publish("status", {"phase": "running", "warnings": [f"見直しに失敗しました: {exc}"]})
+            self._publish_status({"phase": "running", "warnings": [f"見直しに失敗しました: {exc}"]})
             return {"ok": False, "reason": str(exc)}
         finally:
             self._review_lock.release()
@@ -1551,7 +1574,7 @@ class MeetingOrchestrator:
                 self._last_sound_at[key] = now
                 if key in self._silence_alerted:
                     self._silence_alerted.discard(key)
-                    self.bus.publish("status", {"phase": "running", "warnings": [],
+                    self._publish_status({"phase": "running", "warnings": [],
                                                 "note": f"{labels[key]} の音が戻りました"})
                 continue
             since = self._last_sound_at.get(key) or self._started_at
@@ -1560,7 +1583,7 @@ class MeetingOrchestrator:
                 message = (f"{labels[key]} から {int((now - since) / 60)} 分以上音が来ていません。"
                            "機器・ミュート・画面収録の許可を確認してください。")
                 logger.warning("%s", message)
-                self.bus.publish("status", {"phase": "running", "warnings": [message]})
+                self._publish_status({"phase": "running", "warnings": [message]})
 
     def _log_throughput(self, now: float) -> None:
         """1分ごとに、処理が実時間に追いつけているかをログに残す。
@@ -1654,6 +1677,10 @@ class MeetingOrchestrator:
 
     # ------------------------------------------ 会議中の文字起こしを外で回す（方式④）
 
+    def _gemini_llm_purposes(self) -> list[str]:
+        """承認の文面と記録で共用する、全文・事前資料の送信目的。"""
+        return ["state", "prep"] + (["minutes"] if self._dispatch_cfg.on_finish == "minutes" else [])
+
     def _start_external_engines(self) -> None:
         """会議中に外（Gemini）で回すものを、**1 回の承認**でまとめて決める。
 
@@ -1667,13 +1694,16 @@ class MeetingOrchestrator:
         if not (wants_stt or wants_llm or wants_verify):
             return
         config = self._external_cfg
+        if wants_llm or wants_verify:
+            # 事前点検・承認・要約・裏取りの Google 課金確認を、会議ごとに一度だけ行う。
+            config.text_billing()
         items: list[str] = []
         if wants_stt:
             items.append("会議中の音声（30 秒ごと）")
         if wants_llm:
             # 会議のあとの議事録も、この承認で Gemini に回る（`_make_minutes_here` の --approved-external）。
             #   承認の文面に書いていないものは送らない、を守るため、ここで並べる
-            purpose = "要約と会議のあとの議事録のため" if self._dispatch_cfg.on_finish == "minutes" else "要約のため"
+            purpose = "要約と会議のあとの議事録のため" if "minutes" in self._gemini_llm_purposes() else "要約のため"
             items.append(f"会議中の全文と事前資料（{purpose}。音声は送りません）")
         if wants_verify:
             items.append("🔍 を押した行と前後の文字（Google 検索で裏取りするため）")
@@ -1686,13 +1716,16 @@ class MeetingOrchestrator:
             if wants_llm:
                 self._fall_back_llm_to_local(str(refused))
             if wants_verify:
+                message = f"Gemini での裏取りは行いません（{refused}）"
+                logger.warning("%s", message)
+                self._retain_status_warning(message)
                 self._verifier.disable(f"外への送信を承認していません（{refused}）")
             self._publish_models()
             return
         if wants_stt:
             self._start_live_stt(approval)
-        if wants_llm:
-            self._start_gemini_llm()
+        if wants_llm and self._start_gemini_llm(approval):
+            self._llm_approval = approval
         if wants_verify:
             self._start_gemini_verify(approval)
         self._publish_models()
@@ -1700,8 +1733,15 @@ class MeetingOrchestrator:
     def _publish_models(self) -> None:
         """画面は起動時に一度だけ /api/status を読む。エンジンが決まるのはそのあとなので、
         ここで知らせないと「外で回しているのに画面はローカルのまま」になる（2026-09-14 に指摘）。"""
-        self.bus.publish("status", {"phase": "running", "warnings": [],
+        self._publish_status({"phase": "running", "warnings": [],
                                     "models": self.session_info()["models"]})
+
+    def _publish_status(self, payload: dict) -> None:
+        self.bus.publish("status", payload)
+
+    def _retain_status_warning(self, message: str) -> None:
+        self.bus.retain_status_warning(message)
+        self._publish_status({"phase": "running"})
 
     def _start_live_stt(self, approval) -> bool:
         """30 秒刻みで外へ投げる口を開く。承認は `_start_external_engines` で取り済み。
@@ -1716,8 +1756,10 @@ class MeetingOrchestrator:
                 api = DeepgramApi(load_key(config.deepgram_key_file), DeepgramConfig(
                     model=config.deepgram_model, timeout_sec=int(config.timeout_sec)))
             else:
-                api = TranscribeApi(load_key(config.key_file), TranscribeConfig(
+                api = TranscribeApi(require_gemini_audio_key(config), TranscribeConfig(
                     model=config.model, timeout_sec=config.timeout_sec))
+        except ExternalSendRefused as refused:
+            return self._fall_back_to_local(str(refused))
         except (OSError, ValueError) as error:
             return self._fall_back_to_local(f"API キーを読めません（{error}）")
 
@@ -1771,13 +1813,12 @@ class MeetingOrchestrator:
         self._live_stt_label = {}
         logger.warning("会議中の文字起こしは手元で行います: %s", reason)
         print(f"\n  外へは出しません（{reason}）。会議中の文字起こしは手元で行います。")
-        self.bus.publish("status", {"phase": "running",
-                                    "warnings": [f"外へは出しません（{reason}）。手元で文字起こしします"]})
+        self._retain_status_warning(f"外へは出しません（{reason}）。手元で文字起こしします")
         logger.info("Whisper モデルを読み込んでいます…")
         self.whisper._ensure_model()
         return False
 
-    def _start_gemini_llm(self) -> bool:
+    def _start_gemini_llm(self, approval) -> bool:
         """会議中の要約を外（Gemini）で回す。送るのはテキストだけで、音声は送らない。
 
         速さのためではない（単体ならローカルでも 1 回 3.5 秒）。狙いは
@@ -1787,14 +1828,28 @@ class MeetingOrchestrator:
         if self.meeting.summary_mode != "rolling":
             return self._fall_back_llm_to_local(
                 "従来の 3 分要約は外では回せません（meeting.summary_mode: rolling にしてください）")
+        decision = gemini_text_allowed(self._llm_gemini, self._external_cfg,
+                                       timeout_sec=EXTERNAL_CHECK_TIMEOUT_SEC)
+        if not decision.allowed:
+            return self._fall_back_llm_to_local(f"Gemini の課金を確かめられません（{decision.reason}）")
         known = set(GeminiLlmConfig.__dataclass_fields__)
         try:
-            client = GeminiClient(GeminiLlmConfig(**{k: v for k, v in self._llm_gemini.items() if k in known}))
+            client = GeminiClient(GeminiLlmConfig(**{k: v for k, v in self._llm_gemini.items() if k in known}),
+                                  verified_key=decision.api_key)
         except (ValueError, OSError) as error:
             return self._fall_back_llm_to_local(f"Gemini の用意ができません（{error}）")
         if not client.health_check():
             client.close()
             return self._fall_back_llm_to_local("Gemini に繋がりません（キーかモデル名を確認）")
+        # 外部クライアントを有効にする前に、承認された送信目的を記録する。
+        purposes = self._gemini_llm_purposes()
+        try:
+            record_send(self.session_dir, approval, model=client.config.model,
+                        note="state", purposes=purposes)
+        except OSError as error:
+            client.close()
+            return self._fall_back_llm_to_local(f"送信の記録を書けません（{error}）")
+        self._llm_approved_purposes = purposes
         previous, self.llm = self.llm, client
         previous.close()
         self._redigest_prep()
@@ -1823,6 +1878,7 @@ class MeetingOrchestrator:
         """要約は手元の Ollama で回す。Ollama も居なければ、要約なしで会議は続ける。"""
         self._llm_engine = "local"
         logger.warning("会議中の要約は手元で行います: %s", reason)
+        self._retain_status_warning(f"会議中の要約は手元で行います: {reason}")
         print(f"  会議中の要約は手元（{self.llm.config.model}）で回します（{reason}）。")
         if not self.llm.health_check():
             print("  ⚠ Ollama に繋がりません。会議中の要約は出ませんが、文字起こしは続きます。")
@@ -1911,7 +1967,7 @@ class MeetingOrchestrator:
             logger.exception("取りこぼしの記録に失敗")
         logger.warning("外へ送れなかった区間: %s %.0f〜%.0f 秒（%s）",
                        key, window.start_time, window.end_time, error)
-        self.bus.publish("status", {
+        self._publish_status({
             "phase": "running",
             "warnings": [f"外へ送れなかった区間があります（{window.start_time:.0f}〜{window.end_time:.0f} 秒）。"
                          "会議のあとに拾い直します"],
@@ -2448,7 +2504,7 @@ class MeetingOrchestrator:
 
     def _shutdown(self, speakers_path: Path) -> None:
         logger.info("シャットダウン処理中…")
-        self.bus.publish("status", {"phase": "stopping", "warnings": []})
+        self._publish_status({"phase": "stopping", "warnings": []})
         # 画面はここでは閉じない。会議のあとの作り直しで「外へ出すか」を画面で聞くため
         #   （運用者 依頼 2026-09-13「実会議でやるなら GUI で見たい」）。閉じるのはこの関数の最後。
         if self.capture is not None:
@@ -2652,7 +2708,8 @@ class MeetingOrchestrator:
         if not script.exists():
             return
         argv = [sys.executable, str(script), str(self.session_dir)]
-        argv.append("--approved-external" if self._llm_engine == "gemini" else "--no-external")
+        approved = self._llm_approval is not None and "minutes" in self._llm_approved_purposes
+        argv.append("--approved-external" if approved else "--no-external")
         print()
         print("=" * 66)
         print("  議事録を作っています（このまま待ってください）")
